@@ -1,6 +1,11 @@
 /* ============ TELEMOSTushka renderer ============ */
 const $ = (s) => document.querySelector(s);
 
+// Манифест по умолчанию — вшит в сборку, чтобы у всех, кто скачал приложение,
+// сразу работали общие комнаты и проверка обновлений без ручной настройки.
+// Пользователь может переопределить свой ссылкой в ⚙ настройках.
+const DEFAULT_MANIFEST = 'https://raw.githubusercontent.com/cornetto1488/vetroduy/main/vetroduy.json';
+
 let cfg = { rooms: [], sharedUrl: '' };
 let sharedRooms = [];      // комнаты из общего списка по ссылке
 let activeId = null;       // 'home' | room id | null
@@ -395,8 +400,8 @@ async function checkUpdate(manifest) {
 }
 
 async function refreshShared() {
-  if (!cfg.sharedUrl) { sharedRooms = []; renderRooms(); return; }
-  const res = await window.api.fetchShared(cfg.sharedUrl);
+  const manifestUrl = cfg.sharedUrl || DEFAULT_MANIFEST;
+  const res = await window.api.fetchShared(manifestUrl);
   if (!res.ok) return; // тихо оставляем старый список
   let list = [];
   if (Array.isArray(res.data)) {
@@ -779,7 +784,7 @@ async function init() {
   $('#update-btn').addEventListener('click', async () => {
     if (!updateInfo) return;
     if (!updateInfo.url) { // нет прямой ссылки под эту ОС — открываем страницу релизов
-      window.api.openExternal(updateInfo.page || cfg.sharedUrl);
+      window.api.openExternal(updateInfo.page || cfg.sharedUrl || DEFAULT_MANIFEST);
       return;
     }
     if (updating) return;
