@@ -6,7 +6,8 @@
     "linux": "https://github.com/cornetto1488/vetroduy/releases/latest/download/VETRODUY-Setup-1.4.0.tar.gz"
   },
   "rooms": [
-    { "name": "Общий войс", "url": "https://telemost.yandex.ru/j/00000000000000" },
-    { "name": "Дота 2",     "url": "https://telemost.yandex.ru/j/11111111111111" }
+    { "name": "Основная",  "url": "https://telemost.yandex.ru/j/43775111024472" },
+    { "name": "Dota 2",    "url": "https://telemost.yandex.ru/j/83754753161686" },
+    { "name": "Остальное", "url": "https://telemost.yandex.ru/j/7921954994" }
   ]
 }
