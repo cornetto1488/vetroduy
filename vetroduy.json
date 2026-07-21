@@ -5,6 +5,7 @@
     "windows": "https://github.com/cornetto1488/vetroduy/releases/latest/download/VETRODUY-Setup-1.4.0.exe",
     "linux": "https://github.com/cornetto1488/vetroduy/releases/latest/download/VETRODUY-Setup-1.4.0.tar.gz"
   },
+  "backend": "https://vetroduy-9f80d-default-rtdb.firebaseio.com",
   "rooms": [
     { "name": "Основная",  "url": "https://telemost.yandex.ru/j/43775111024472" },
     { "name": "Dota 2",    "url": "https://telemost.yandex.ru/j/83754753161686" },
