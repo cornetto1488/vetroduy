@@ -531,6 +531,26 @@ ipcMain.on('rooms:update', (e, rooms) => {
   rebuildTray();
 });
 
+// ---------- прокси к бэкенду (Firebase RTDB REST) для чата/presence/пинга ----------
+// Ходим из main, чтобы обойти CORS. base задаёт renderer (из манифеста).
+ipcMain.handle('db:req', async (e, opts) => {
+  try {
+    const { base, method, path, body, query } = opts || {};
+    if (!/^https?:\/\//.test(base || '')) return { ok: false, error: 'нет бэкенда' };
+    let url = base.replace(/\/+$/, '') + '/' + String(path || '').replace(/^\/+/, '') + '.json';
+    if (query) url += (url.includes('?') ? '&' : '?') + query;
+    const init = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
+    if (body !== undefined && method && method !== 'GET') init.body = JSON.stringify(body);
+    const res = await net.fetch(url, init);
+    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 160) };
+  }
+});
+
 ipcMain.on('win:minimize', () => win && win.minimize());
 ipcMain.on('win:maximize', () => {
   if (!win) return;

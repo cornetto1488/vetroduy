@@ -54,6 +54,7 @@ function activate(id) {
   ensureView(id, room.url);
   views.forEach((wv, key) => wv.classList.toggle('active', key === id));
   renderRooms();
+  presenceHeartbeat(); // сразу отметиться в новой комнате
 }
 
 function destroyView(id) {
@@ -227,8 +228,22 @@ async function pollCounts() {
   }
   updateBadges();
   updateSpeaking();
+  applyDucking();
 }
 setInterval(pollCounts, 2500);
+
+/* ---------- дакинг: музыка тише, когда говорит человек ---------- */
+let duckingEnabled = false;
+let lastDuckVol = null;
+
+async function applyDucking() {
+  if (!botView || !botJoined || !pendingTrack || isPaused) { lastDuckVol = null; return; }
+  const humanSpeaking = speakingNames.some((n) => n !== BOT_NAME);
+  const target = (duckingEnabled && humanSpeaking) ? +(botVolume * 0.2).toFixed(3) : botVolume;
+  if (lastDuckVol === target) return;
+  lastDuckVol = target;
+  try { await botView.executeJavaScript(`window.__bot && window.__bot.volume(${target})`, false); } catch {}
+}
 
 function onSomeoneJoined(id, n) {
   const room = findRoom(id);
@@ -263,6 +278,12 @@ function badgeFor(id) {
   const n = counts.get(id);
   if (Number.isInteger(n)) return { text: '👤 ' + n, live: true };
   if (views.has(id)) return { text: '', live: true };
+  // presence из бэкенда — «кто где сидит» для комнат, куда мы не заходили
+  const room = findRoom(id);
+  if (room) {
+    const info = presenceInfo[urlKey(room.url)];
+    if (info && info.count) return { text: '👥 ' + info.count, live: false, title: info.names.join(', ') };
+  }
   return null;
 }
 
@@ -274,7 +295,8 @@ function updateBadges() {
     const b = badgeFor(id);
     if (!b) { holder.innerHTML = ''; return; }
     if (b.text) {
-      holder.innerHTML = '<span class="count-badge">' + b.text + '</span>';
+      const cls = b.live ? 'count-badge' : 'count-badge presence';
+      holder.innerHTML = '<span class="' + cls + '"' + (b.title ? ' title="' + b.title.replace(/"/g, '') + '"' : '') + '>' + b.text + '</span>';
     } else {
       holder.innerHTML = '<span class="live-dot" title="Подключено"></span>';
     }
@@ -300,17 +322,21 @@ function makeRoomButton(room, shared) {
 
   btn.append(ico, name, status);
 
+  const watched = Array.isArray(cfg.pings) && cfg.pings.includes(room.id);
+  const bell = `<button class="ra-btn${watched ? ' on' : ''}" data-act="ping" title="Пинговать, когда кто-то зайдёт">${watched ? '🔔' : '🔕'}</button>`;
+
   const actions = document.createElement('span');
   actions.className = 'room-actions';
   actions.innerHTML = shared
-    ? '<button class="ra-btn" data-act="copy" title="Копировать ссылку">⧉</button>'
-    : '<button class="ra-btn" data-act="copy" title="Копировать ссылку">⧉</button>' +
+    ? bell + '<button class="ra-btn" data-act="copy" title="Копировать ссылку">⧉</button>'
+    : bell + '<button class="ra-btn" data-act="copy" title="Копировать ссылку">⧉</button>' +
       '<button class="ra-btn" data-act="edit" title="Изменить">✎</button>' +
       '<button class="ra-btn del" data-act="del" title="Удалить">✕</button>';
   btn.appendChild(actions);
 
   btn.addEventListener('click', (e) => {
     const act = e.target.dataset && e.target.dataset.act;
+    if (act === 'ping') { togglePing(room.id); return; }
     if (act === 'copy') { navigator.clipboard.writeText(room.url); return; }
     if (act === 'edit') { openRoomModal(room); return; }
     if (act === 'del') { deleteRoom(room.id); return; }
@@ -409,6 +435,14 @@ async function refreshShared() {
   } else if (res.data && typeof res.data === 'object') {
     list = Array.isArray(res.data.rooms) ? res.data.rooms : [];
     checkUpdate(res.data);
+    // адрес общего бэкенда (Firebase RTDB) — для чата/presence/пингов
+    const b = typeof res.data.backend === 'string' ? res.data.backend.trim() : '';
+    if (b && b !== backendUrl) {
+      backendUrl = b;
+      $('#chat-btn').classList.remove('hidden');
+      presenceHeartbeat();
+      presenceRead();
+    }
   }
   const fresh = [];
   for (const item of list) {
@@ -650,7 +684,10 @@ async function musicGo() {
   const addItem = (text, small, item) => {
     const b = document.createElement('button');
     b.className = 'mr-item';
-    b.textContent = text + ' ';
+    const title = document.createElement('span');
+    title.className = 'mr-title';
+    title.textContent = text;
+    b.appendChild(title);
     if (small) {
       const sm = document.createElement('small');
       sm.textContent = small;
@@ -735,11 +772,176 @@ function saveRoomFromModal() {
   $('#modal-room').classList.add('hidden');
 }
 
+/* ============================================================
+   Бэкенд: чат, presence («кто где сидит»), пинги.
+   Работает через Firebase RTDB REST (адрес берётся из манифеста,
+   поле "backend"). Без адреса функции просто спят.
+   ============================================================ */
+let backendUrl = '';
+let deviceId = '';
+let myName = 'Гость';
+let presenceInfo = {};   // urlKey -> { count, names[] }
+let prevPresence = {};   // urlKey -> count (для пинга 0→>0)
+
+function db(method, path, body, query) {
+  if (!backendUrl) return Promise.resolve({ ok: false, error: 'нет бэкенда' });
+  return window.api.dbReq({ base: backendUrl, method, path, body, query });
+}
+
+function urlKey(url) {
+  // стабильный ключ встречи по её ссылке — одинаковый у всех участников
+  try {
+    const m = String(url).match(/telemost\.yandex\.[a-z]+\/j\/(\d+)/i);
+    if (m) return 'm' + m[1];
+  } catch {}
+  return hashId(String(url));
+}
+
+function backendReady() { return !!backendUrl; }
+
+/* ---------- presence: пишем, что мы в комнате, и читаем остальных ---------- */
+let lastPresenceKey = null;
+
+async function presenceHeartbeat() {
+  if (!backendReady()) return;
+  const room = activeId && activeId !== 'home' ? findRoom(activeId) : null;
+  const key = room ? urlKey(room.url) : null;
+
+  // ушли из старой комнаты — убираем себя оттуда
+  if (lastPresenceKey && lastPresenceKey !== key) {
+    db('DELETE', `presence/${lastPresenceKey}/${deviceId}`);
+    lastPresenceKey = null;
+  }
+  if (!key) return;
+  lastPresenceKey = key;
+  db('PUT', `presence/${key}/${deviceId}`, { name: myName, ts: Date.now() });
+}
+
+async function presenceRead() {
+  if (!backendReady()) return;
+  const res = await db('GET', 'presence');
+  if (!res.ok) return;
+  const now = Date.now();
+  const info = {};
+  const data = res.data || {};
+  for (const key of Object.keys(data)) {
+    const members = data[key] || {};
+    const names = [];
+    for (const dev of Object.keys(members)) {
+      const m = members[dev];
+      if (m && typeof m.ts === 'number' && now - m.ts < 50000) names.push(m.name || 'кто-то');
+    }
+    if (names.length) info[key] = { count: names.length, names };
+  }
+  presenceInfo = info;
+  checkPings();
+  updateBadges();
+}
+
+function checkPings() {
+  const watched = Array.isArray(cfg.pings) ? cfg.pings : [];
+  for (const room of [...cfg.rooms, ...sharedRooms]) {
+    if (!watched.includes(room.id)) continue;
+    const key = urlKey(room.url);
+    const now = (presenceInfo[key] && presenceInfo[key].count) || 0;
+    const before = prevPresence[key] || 0;
+    if (before === 0 && now > 0 && room.id !== activeId) {
+      playPop();
+      try { new Notification('ВЕТРОДУЙ', { body: `🔔 В «${room.name}» кто-то появился (${now})`, silent: true }); } catch {}
+    }
+  }
+  // запоминаем текущее состояние по всем ключам
+  const snap = {};
+  for (const room of [...cfg.rooms, ...sharedRooms]) {
+    const key = urlKey(room.url);
+    snap[key] = (presenceInfo[key] && presenceInfo[key].count) || 0;
+  }
+  prevPresence = snap;
+}
+
+function togglePing(roomId) {
+  const watched = Array.isArray(cfg.pings) ? cfg.pings.slice() : [];
+  const i = watched.indexOf(roomId);
+  if (i >= 0) watched.splice(i, 1); else watched.push(roomId);
+  cfg.pings = watched;
+  window.api.setConfig({ pings: watched });
+  renderRooms();
+}
+
+/* ---------- чат-шаутбокс ---------- */
+let chatOpen = false;
+let chatTimer = null;
+let lastChatKeys = new Set();
+
+async function chatPoll() {
+  if (!backendReady() || !chatOpen) return;
+  const res = await db('GET', 'chat', undefined, 'orderBy="$key"&limitToLast=60');
+  if (!res.ok || !res.data) { renderChat([]); return; }
+  const msgs = Object.keys(res.data).sort().map((k) => ({ k, ...res.data[k] }));
+  renderChat(msgs);
+}
+
+function renderChat(msgs) {
+  const box = $('#chat-messages');
+  if (!box) return;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.innerHTML = '';
+  for (const m of msgs) {
+    const row = document.createElement('div');
+    row.className = 'chat-msg' + (m.dev === deviceId ? ' mine' : '');
+    const who = document.createElement('span');
+    who.className = 'chat-who';
+    who.textContent = m.name || 'кто-то';
+    const txt = document.createElement('span');
+    txt.className = 'chat-text';
+    txt.textContent = m.text || '';
+    row.append(who, txt);
+    box.appendChild(row);
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function chatSend() {
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!backendReady()) { alert('Чат не настроен: в манифесте нет поля "backend" (см. README).'); return; }
+  input.value = '';
+  await db('POST', 'chat', { name: myName, dev: deviceId, text: text.slice(0, 500), ts: Date.now() });
+  chatPoll();
+}
+
+function openChat() {
+  chatOpen = true;
+  $('#modal-chat').classList.remove('hidden');
+  $('#chat-input').focus();
+  chatPoll();
+  if (chatTimer) clearInterval(chatTimer);
+  chatTimer = setInterval(chatPoll, 3500);
+}
+
+function closeChat() {
+  chatOpen = false;
+  $('#modal-chat').classList.add('hidden');
+  if (chatTimer) { clearInterval(chatTimer); chatTimer = null; }
+}
+
+setInterval(presenceHeartbeat, 20000);
+setInterval(presenceRead, 12000);
+
 /* ---------- инициализация ---------- */
 async function init() {
   cfg = await window.api.getConfig();
   if (!Array.isArray(cfg.rooms)) cfg.rooms = [];
   if (typeof cfg.sharedUrl !== 'string') cfg.sharedUrl = '';
+  duckingEnabled = !!cfg.ducking;
+  $('#music-duck').classList.toggle('active', duckingEnabled);
+
+  // идентификатор устройства и имя для чата/presence
+  if (!cfg.deviceId) { cfg.deviceId = crypto.randomUUID(); window.api.setConfig({ deviceId: cfg.deviceId }); }
+  deviceId = cfg.deviceId;
+  myName = cfg.userName || 'Гость';
+
   renderRooms();
   refreshShared();
 
@@ -812,10 +1014,17 @@ async function init() {
       userName: $('#user-name-input').value.trim(),
       sharedUrl: $('#shared-url-input').value.trim()
     });
+    myName = cfg.userName || 'Гость';
     $('#modal-settings').classList.add('hidden');
     sharedRooms = [];
     refreshShared();
   });
+
+  // общий чат
+  $('#chat-btn').addEventListener('click', openChat);
+  $('#chat-close').addEventListener('click', closeChat);
+  $('#chat-send').addEventListener('click', chatSend);
+  $('#chat-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') chatSend(); });
 
   // музыкальный бот
   $('#music-play').addEventListener('click', musicGo);
@@ -842,20 +1051,32 @@ async function init() {
     } catch {}
   });
   $('#music-next').addEventListener('click', () => playNext());
+  $('#music-duck').addEventListener('click', () => {
+    duckingEnabled = !duckingEnabled;
+    $('#music-duck').classList.toggle('active', duckingEnabled);
+    window.api.setConfig({ ducking: duckingEnabled });
+    lastDuckVol = null; // пересчитать громкость немедленно
+    applyDucking();
+  });
   $('#music-stop').addEventListener('click', () => stopBot(false));
   $('#music-volume').addEventListener('input', async (e) => {
     botVolume = e.target.value / 100;
+    lastDuckVol = null; // слайдер важнее — сбрасываем дакинг-кэш
     if (botView && botJoined) {
-      try { await botView.executeJavaScript(`window.__bot && window.__bot.volume(${botVolume})`, false); } catch {}
+      // если сейчас идёт приглушение — не перебиваем его полным звуком
+      const humanSpeaking = speakingNames.some((n) => n !== BOT_NAME);
+      const v = (duckingEnabled && humanSpeaking) ? +(botVolume * 0.2).toFixed(3) : botVolume;
+      lastDuckVol = v;
+      try { await botView.executeJavaScript(`window.__bot && window.__bot.volume(${v})`, false); } catch {}
     }
   });
 
   // закрытие модалок по клику на фон / Escape
   document.querySelectorAll('.modal-back').forEach((back) => {
-    back.addEventListener('mousedown', (e) => { if (e.target === back) back.classList.add('hidden'); });
+    back.addEventListener('mousedown', (e) => { if (e.target === back) { back.classList.add('hidden'); if (back.id === 'modal-chat') closeChat(); } });
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') document.querySelectorAll('.modal-back').forEach((b) => b.classList.add('hidden'));
+    if (e.key === 'Escape') { closeChat(); document.querySelectorAll('.modal-back').forEach((b) => b.classList.add('hidden')); }
   });
 }
 

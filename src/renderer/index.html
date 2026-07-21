@@ -19,6 +19,7 @@
     <div class="tb-left">
       <img class="logo-mini" src="logo.png" alt="" />
       <span class="tb-title">ВЕТРОДУЙ</span>
+      <button id="chat-btn" class="tb-chat hidden" title="Общий чат">💬</button>
     </div>
     <div class="tb-controls">
       <button id="btn-mini" class="tb-btn" title="Мини-режим поверх окон">◱</button>
@@ -64,6 +65,7 @@
         <div class="mp-row mp-controls hidden" id="music-controls">
           <button id="music-pause" class="icon-btn" title="Пауза / продолжить">⏸</button>
           <button id="music-next" class="icon-btn" title="Следующий трек">⏭</button>
+          <button id="music-duck" class="icon-btn" title="Приглушать музыку, когда кто-то говорит">🦆</button>
           <button id="music-stop" class="icon-btn" title="Выгнать бота из канала">⏻</button>
           <input id="music-volume" type="range" min="0" max="100" value="50" title="Громкость у всех" />
         </div>
@@ -136,6 +138,21 @@
       <div class="modal-actions">
         <button id="btn-settings-cancel" class="btn ghost">Закрыть</button>
         <button id="btn-settings-save" class="btn primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- модалка: общий чат -->
+  <div id="modal-chat" class="modal-back hidden">
+    <div class="modal glass chat-modal">
+      <div class="chat-head">
+        <h2>💬 Общий чат</h2>
+        <button id="chat-close" class="icon-btn" title="Закрыть">✕</button>
+      </div>
+      <div id="chat-messages"></div>
+      <div class="chat-row">
+        <input id="chat-input" type="text" placeholder="Сообщение…" maxlength="500" />
+        <button id="chat-send" class="btn primary">▶</button>
       </div>
     </div>
   </div>

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   ytSearch: (q) => ipcRenderer.invoke('music:ytsearch', q),
   ytUrl: (id) => ipcRenderer.invoke('music:yturl', id),
   appVersion: () => ipcRenderer.invoke('app:version'),
+  dbReq: (opts) => ipcRenderer.invoke('db:req', opts),
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   onUpdateProgress: (cb) => ipcRenderer.on('update:progress', (e, pct) => cb(pct)),
   botPatchSource: () => botPatchSource,
