@@ -1,0 +1,12 @@
+{
+  "version": "1.4.0",
+  "page": "https://github.com/cornetto1488/vetroduy/releases/latest",
+  "download": {
+    "windows": "https://github.com/cornetto1488/vetroduy/releases/latest/download/VETRODUY-Setup-1.4.0.exe",
+    "linux": "https://github.com/cornetto1488/vetroduy/releases/latest/download/VETRODUY-Setup-1.4.0.tar.gz"
+  },
+  "rooms": [
+    { "name": "Общий войс", "url": "https://telemost.yandex.ru/j/00000000000000" },
+    { "name": "Дота 2",     "url": "https://telemost.yandex.ru/j/11111111111111" }
+  ]
+}

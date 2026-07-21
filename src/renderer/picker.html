@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Демонстрация экрана</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      color: #eef1ff;
+      background: radial-gradient(900px 600px at 80% -10%, #1c2050 0%, #12142a 60%);
+      display: flex; flex-direction: column;
+      user-select: none;
+    }
+    header {
+      padding: 18px 22px 12px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    h1 { font-size: 17px; font-weight: 600; }
+    .sub { font-size: 12px; color: rgba(238,241,255,.5); margin-top: 3px; }
+    #close {
+      width: 32px; height: 32px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.06); color: #eef1ff; cursor: pointer; font-size: 13px;
+    }
+    #close:hover { background: #ff6b81; }
+    #tabs { display: flex; gap: 8px; padding: 0 22px 12px; }
+    .tab {
+      padding: 7px 16px; border-radius: 10px; font-size: 13px; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05); color: rgba(238,241,255,.6);
+    }
+    .tab.active {
+      background: linear-gradient(135deg, rgba(124,140,255,.3), rgba(177,124,255,.2));
+      border-color: rgba(124,140,255,.45); color: #fff;
+    }
+    #grid {
+      flex: 1; overflow-y: auto;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 14px; padding: 4px 22px 22px;
+    }
+    #grid::-webkit-scrollbar { width: 8px; }
+    #grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
+    .card {
+      border: 1px solid rgba(255,255,255,.1); border-radius: 14px; overflow: hidden;
+      background: rgba(255,255,255,.05); cursor: pointer; text-align: left;
+      transition: transform .12s, border-color .12s, background .12s;
+    }
+    .card:hover { transform: translateY(-2px); border-color: rgba(124,140,255,.7); background: rgba(124,140,255,.12); }
+    .card img.thumb { width: 100%; height: 130px; object-fit: cover; display: block; background: #0b0d1a; }
+    .card .label {
+      display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+      font-size: 12px; color: #eef1ff;
+    }
+    .card .label img.icon { width: 16px; height: 16px; }
+    .card .label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .note { padding: 0 22px 14px; font-size: 11px; color: rgba(238,241,255,.4); }
+    .empty { grid-column: 1/-1; text-align: center; color: rgba(238,241,255,.4); padding: 40px 0; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Что показать?</h1>
+      <div class="sub">Выбери экран или отдельное окно для демонстрации</div>
+    </div>
+    <button id="close" title="Отмена">✕</button>
+  </header>
+  <div id="tabs">
+    <button class="tab active" data-kind="screen">Экраны</button>
+    <button class="tab" data-kind="window">Окна</button>
+  </div>
+  <div id="grid"></div>
+  <div class="note">При показе всего экрана передаётся и системный звук.</div>
+  <script>
+    let all = [];
+    let kind = 'screen';
+
+    function render() {
+      const grid = document.getElementById('grid');
+      grid.innerHTML = '';
+      const items = all.filter((s) => s.kind === kind);
+      if (!items.length) {
+        grid.innerHTML = '<div class="empty">Ничего не найдено</div>';
+        return;
+      }
+      for (const s of items) {
+        const card = document.createElement('button');
+        card.className = 'card';
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        if (s.thumb) img.src = s.thumb;
+        const label = document.createElement('div');
+        label.className = 'label';
+        if (s.icon) {
+          const ic = document.createElement('img');
+          ic.className = 'icon';
+          ic.src = s.icon;
+          label.appendChild(ic);
+        }
+        const name = document.createElement('span');
+        name.textContent = s.name;
+        label.appendChild(name);
+        card.append(img, label);
+        card.addEventListener('click', () => window.picker.choose(s.id));
+        grid.appendChild(card);
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => {
+      kind = t.dataset.kind;
+      document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t));
+      render();
+    }));
+
+    window.picker.onSources((sources) => { all = sources; render(); });
+    document.getElementById('close').addEventListener('click', () => window.picker.cancel());
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.picker.cancel(); });
+  </script>
+</body>
+</html>

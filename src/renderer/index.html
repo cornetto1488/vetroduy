@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>ВЕТРОДУЙ</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- живой фон -->
+  <div id="bg">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="grain"></div>
+  </div>
+
+  <!-- шапка окна -->
+  <header id="titlebar">
+    <div class="tb-left">
+      <img class="logo-mini" src="logo.png" alt="" />
+      <span class="tb-title">ВЕТРОДУЙ</span>
+    </div>
+    <div class="tb-controls">
+      <button id="btn-mini" class="tb-btn" title="Мини-режим поверх окон">◱</button>
+      <button id="btn-min" class="tb-btn" title="Свернуть">&#x2500;</button>
+      <button id="btn-max" class="tb-btn" title="Развернуть">&#x25A1;</button>
+      <button id="btn-close" class="tb-btn tb-close" title="Свернуть в трей">&#x2715;</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <!-- боковая панель -->
+    <aside id="sidebar" class="glass">
+      <div class="sb-header">
+        <span>Комнаты</span>
+        <span class="sb-actions">
+          <button id="btn-settings" class="icon-btn" title="Общий список комнат">⚙</button>
+        <button id="btn-add-room" class="icon-btn" title="Добавить комнату">+</button>
+        </span>
+      </div>
+
+      <nav id="room-list">
+        <button class="room home-room" data-id="home">
+          <span class="room-ico">⌂</span>
+          <span class="room-name">Телемост</span>
+          <span class="room-status"></span>
+        </button>
+        <!-- комнаты добавляются сюда -->
+      </nav>
+
+      <button id="update-btn" class="update-btn hidden"></button>
+
+      <div id="music-panel">
+        <div class="mp-head">
+          <span>🎵 Музыка-бот</span>
+          <span id="music-state" class="mp-state">выключен</span>
+        </div>
+        <div class="mp-row">
+          <input id="music-input" type="text" placeholder="Песня, радио или ссылка…" />
+          <button id="music-play" class="icon-btn" title="Найти">🔍</button>
+        </div>
+        <div id="music-results" class="hidden"></div>
+        <div id="music-queue" class="hidden"></div>
+        <div class="mp-row mp-controls hidden" id="music-controls">
+          <button id="music-pause" class="icon-btn" title="Пауза / продолжить">⏸</button>
+          <button id="music-next" class="icon-btn" title="Следующий трек">⏭</button>
+          <button id="music-stop" class="icon-btn" title="Выгнать бота из канала">⏻</button>
+          <input id="music-volume" type="range" min="0" max="100" value="50" title="Громкость у всех" />
+        </div>
+      </div>
+
+      <div class="sb-footer">
+        <span title="Глобальный хоткей мута">🎙 Ctrl+Shift+M — мут</span>
+      </div>
+    </aside>
+
+    <!-- основная область -->
+    <main id="content" class="glass">
+      <div id="welcome">
+        <div class="welcome-card">
+          <img class="logo-big" src="logo.png" alt="" />
+          <h1>ВЕТРОДУЙ</h1>
+          <p>Комнаты для созвонов на базе Яндекс&nbsp;Телемоста.</p>
+          <ol>
+            <li>Нажми «⌂ Телемост» слева и создай встречу.</li>
+            <li>Скопируй ссылку на встречу.</li>
+            <li>Нажми «+» и добавь её как комнату.</li>
+          </ol>
+          <p class="hint">Переход в другую комнату отключает от текущей — как в Discord.
+          Крестик сворачивает в трей (звонок живёт), ◱ — мини-окно поверх игр, Ctrl+Shift+M — мут откуда угодно.</p>
+        </div>
+      </div>
+      <div id="views"></div>
+    </main>
+  </div>
+
+  <!-- модалка: добавить/изменить комнату -->
+  <div id="modal-room" class="modal-back hidden">
+    <div class="modal glass">
+      <h2 id="modal-room-title">Новая комната</h2>
+      <label>Название
+        <input id="room-name-input" type="text" placeholder="Например: Общий войс" maxlength="40" />
+      </label>
+      <label>Ссылка на встречу Телемоста
+        <div class="link-row">
+          <input id="room-url-input" type="text" placeholder="https://telemost.yandex.ru/j/..." />
+          <button id="btn-paste" class="icon-btn" title="Вставить из буфера">📋</button>
+        </div>
+      </label>
+      <p id="room-error" class="error hidden"></p>
+      <div class="modal-actions">
+        <button id="btn-room-cancel" class="btn ghost">Отмена</button>
+        <button id="btn-room-save" class="btn primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- модалка: общий список комнат -->
+  <div id="modal-settings" class="modal-back hidden">
+    <div class="modal glass">
+      <h2>Настройки</h2>
+      <label>Твоё имя в звонках
+        <input id="user-name-input" type="text" placeholder="Например: Рейн" maxlength="30" />
+      </label>
+      <p class="hint">С именем приложение само прокликивает все экраны Телемоста
+        («Продолжить в браузере», имя, «Подключиться») — заходишь в комнату сразу в звонок.</p>
+      <label>Ссылка на манифест (комнаты + обновления)
+        <input id="shared-url-input" type="text" placeholder="https://raw.githubusercontent.com/.../vetroduy.json" />
+      </label>
+      <p class="hint">
+        JSON вида <code>{"version":"1.4.0","download":{"windows":"...exe","linux":"...tar.gz"},"rooms":[{"name":"Войс","url":"https://telemost.yandex.ru/j/..."}]}</code>.
+        Комнаты появятся у всех с этой ссылкой (раздел «Общие» ☁), а при новой версии
+        в сайдбаре появится кнопка «Скачать обновление». Можно и просто массив комнат
+        <code>[{...}]</code> без обновлений. Подробности — в README.
+      </p>
+      <div class="modal-actions">
+        <button id="btn-settings-cancel" class="btn ghost">Закрыть</button>
+        <button id="btn-settings-save" class="btn primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
