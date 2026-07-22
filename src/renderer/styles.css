@@ -179,6 +179,19 @@ html, body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #music-volume { flex: 1; accent-color: var(--accent); }
+#music-panel.locked { opacity: 0.75; }
+.icon-btn:disabled, #music-input:disabled, #music-volume:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* модалка прав */
+.perm-all { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text);
+  padding: 10px 12px; border-radius: 11px; background: rgba(0,0,0,.2); border: 1px solid var(--stroke-soft); }
+#perm-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+#perm-list::-webkit-scrollbar { width: 6px; }
+#perm-list::-webkit-scrollbar-thumb { background: var(--stroke); border-radius: 3px; }
+.perm-row { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text);
+  padding: 8px 12px; border-radius: 10px; background: var(--glass); border: 1px solid var(--stroke-soft); cursor: pointer; }
+.perm-row:hover { background: var(--glass-strong); }
+.perm-row input, .perm-all input { width: 17px; height: 17px; accent-color: var(--danger); cursor: pointer; }
 
 /* сам webview бота живёт скрыто */
 webview.bot-view {

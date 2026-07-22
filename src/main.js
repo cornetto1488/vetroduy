@@ -4,6 +4,14 @@ const fs = require('fs');
 const http = require('http');
 const { execFile } = require('child_process');
 
+// На Linux tar.gz-сборка не имеет setuid-обёртки для chrome-sandbox,
+// из-за чего приложение падает при старте. Отключаем песочницу на Linux —
+// тогда ./vetroduy запускается напрямую без "SUID sandbox helper" ошибки.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+}
+
 let win = null;
 let tray = null;
 let trayRooms = [];

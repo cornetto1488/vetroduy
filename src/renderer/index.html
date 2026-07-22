@@ -66,6 +66,7 @@
           <button id="music-pause" class="icon-btn" title="Пауза / продолжить">⏸</button>
           <button id="music-next" class="icon-btn" title="Следующий трек">⏭</button>
           <button id="music-duck" class="icon-btn" title="Приглушать музыку, когда кто-то говорит">🦆</button>
+          <button id="music-perms" class="icon-btn hidden" title="Права: кто может управлять музыкой">🔒</button>
           <button id="music-stop" class="icon-btn" title="Выгнать бота из канала">⏻</button>
           <input id="music-volume" type="range" min="0" max="100" value="50" title="Громкость у всех" />
         </div>
@@ -138,6 +139,22 @@
       <div class="modal-actions">
         <button id="btn-settings-cancel" class="btn ghost">Закрыть</button>
         <button id="btn-settings-save" class="btn primary">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- модалка: права на музыку (только у хоста) -->
+  <div id="modal-perms" class="modal-back hidden">
+    <div class="modal glass">
+      <h2>🔒 Права на музыку</h2>
+      <p class="hint">Ты — хост бота. Реши, кто может управлять музыкой (очередь, громкость, скип, пауза).</p>
+      <label class="perm-all">
+        <input type="checkbox" id="perm-lockall" />
+        Запретить всем — управляю только я
+      </label>
+      <div id="perm-list"></div>
+      <div class="modal-actions">
+        <button id="perm-close" class="btn primary">Готово</button>
       </div>
     </div>
   </div>

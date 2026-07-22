@@ -626,6 +626,7 @@ function enqueueLocal(item) {
 async function enqueue(item) {
   const cr = callRoomId();
   if (!cr) { setMusicState('сначала зайди в комнату', false); return; }
+  if (musicBlocked()) { setMusicState('🔒 хост запретил добавлять треки', false); return; }
   const key = smSessionKey();
 
   if (key && !smIsHost) {
@@ -709,6 +710,14 @@ let smTimer = null;      // цикл синхронизации
 let smLastSkip = 0;
 let smLastStop = 0;
 let smAppliedVol = null;
+let smPerms = null;      // права, прочитанные follower'ом: {lockAll, blocked:{dev}}
+let hostPerms = { lockAll: false, blocked: {} }; // права, которые задаёт хост
+
+// заблокировано ли нам (follower'у) управление музыкой
+function musicBlocked() {
+  if (!smFollower() || !smPerms) return false;
+  return !!(smPerms.lockAll || (smPerms.blocked && smPerms.blocked[deviceId]));
+}
 
 function smSessionKey() {
   const cr = callRoomId();
@@ -723,7 +732,10 @@ async function smBecomeHost(key) {
   smKey = key;
   smIsHost = true;
   smLastSkip = 0; smLastStop = 0;
+  hostPerms = { lockAll: false, blocked: {} };
   await db('PUT', `music/${key}/host`, { dev: deviceId, name: myName, ts: Date.now() });
+  await db('PUT', `music/${key}/perms`, hostPerms);
+  $('#music-perms').classList.remove('hidden'); // хосту доступна кнопка прав
   if (smHbTimer) clearInterval(smHbTimer);
   smHbTimer = setInterval(() => {
     if (smIsHost && smKey) db('PUT', `music/${smKey}/host`, { dev: deviceId, name: myName, ts: Date.now() });
@@ -786,6 +798,8 @@ async function smHostTick(key, m) {
 }
 
 function smFollowTick(m) {
+  $('#music-perms').classList.add('hidden'); // кнопка прав только у хоста
+  smPerms = m.perms || null;
   if (!hostFresh(m.host)) {
     // хост ушёл — по решению: музыка останавливается
     setMusicState('бота нет', false);
@@ -794,11 +808,20 @@ function smFollowTick(m) {
     return;
   }
   const v = m.view || {};
-  setMusicState(v.now ? '▶ ' + v.now : 'бот в канале', true);
+  const blocked = musicBlocked();
+  setMusicState(blocked ? '🔒 хост ограничил управление' : (v.now ? '▶ ' + v.now : 'бот в канале'), !blocked);
   $('#music-controls').classList.remove('hidden');
   $('#music-pause').textContent = v.paused ? '▶' : '⏸';
   if (typeof v.volume === 'number') $('#music-volume').value = v.volume;
   renderQueueNames(v.queue || [], v.hostName);
+  applyMusicLock(blocked);
+}
+
+// блокируем/разблокируем элементы управления музыкой у follower'а
+function applyMusicLock(blocked) {
+  const els = ['#music-input', '#music-play', '#music-pause', '#music-next', '#music-stop', '#music-volume'];
+  els.forEach((s) => { const el = $(s); if (el) el.disabled = !!blocked; });
+  $('#music-panel').classList.toggle('locked', !!blocked);
 }
 
 async function smPublish() {
@@ -836,8 +859,11 @@ async function smKickAsHost() {
 function smTeardown() {
   smIsHost = false;
   smKey = null;
+  smPerms = null;
   if (smHbTimer) { clearInterval(smHbTimer); smHbTimer = null; }
   if (smTimer) { clearInterval(smTimer); smTimer = null; }
+  $('#music-perms').classList.add('hidden');
+  applyMusicLock(false); // снять блокировку
 }
 
 // очередь только для отображения (у не-хоста)
@@ -854,6 +880,47 @@ function renderQueueNames(names, hostName) {
     row.appendChild(label);
     box.appendChild(row);
   });
+}
+
+// ---------- права хоста: кто может управлять музыкой ----------
+async function writeHostPerms() {
+  if (!smIsHost || !smKey) return;
+  await db('PUT', `music/${smKey}/perms`, hostPerms);
+}
+
+function renderPermList() {
+  $('#perm-lockall').checked = !!hostPerms.lockAll;
+  const box = $('#perm-list');
+  box.innerHTML = '';
+  const members = presenceMembers[smKey] || {};
+  const others = Object.keys(members).filter((d) => d !== deviceId && members[d] !== BOT_NAME);
+  if (!others.length) {
+    box.innerHTML = '<p class="hint">Пока в комнате больше никого нет.</p>';
+    return;
+  }
+  for (const dev of others) {
+    const row = document.createElement('label');
+    row.className = 'perm-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!(hostPerms.blocked && hostPerms.blocked[dev]);
+    cb.addEventListener('change', () => {
+      hostPerms.blocked = hostPerms.blocked || {};
+      if (cb.checked) hostPerms.blocked[dev] = true; else delete hostPerms.blocked[dev];
+      writeHostPerms();
+    });
+    const span = document.createElement('span');
+    span.textContent = members[dev];
+    row.append(cb, span);
+    box.appendChild(row);
+  }
+}
+
+async function openPerms() {
+  if (!smIsHost) return;
+  await presenceRead(); // освежить список участников
+  renderPermList();
+  $('#modal-perms').classList.remove('hidden');
 }
 
 // авто-обнаружение чужого бота в комнате звонка → пассивно показываем сеанс
@@ -990,6 +1057,7 @@ let backendUrl = '';
 let deviceId = '';
 let myName = 'Гость';
 let presenceInfo = {};   // urlKey -> { count, names[] }
+let presenceMembers = {}; // urlKey -> { deviceId: name } (свежие участники)
 let prevPresence = {};   // urlKey -> count (для пинга 0→>0)
 
 function db(method, path, body, query) {
@@ -1033,17 +1101,20 @@ async function presenceRead() {
   if (!res.ok) return;
   const now = Date.now();
   const info = {};
+  const membersByKey = {};
   const data = res.data || {};
   for (const key of Object.keys(data)) {
     const members = data[key] || {};
     const names = [];
+    const fresh = {};
     for (const dev of Object.keys(members)) {
       const m = members[dev];
-      if (m && typeof m.ts === 'number' && now - m.ts < 50000) names.push(m.name || 'кто-то');
+      if (m && typeof m.ts === 'number' && now - m.ts < 50000) { names.push(m.name || 'кто-то'); fresh[dev] = m.name || 'кто-то'; }
     }
-    if (names.length) info[key] = { count: names.length, names };
+    if (names.length) { info[key] = { count: names.length, names }; membersByKey[key] = fresh; }
   }
   presenceInfo = info;
+  presenceMembers = membersByKey;
   checkPings();
   updateBadges();
 }
@@ -1241,6 +1312,7 @@ async function init() {
   $('#music-play').addEventListener('click', musicGo);
   $('#music-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') musicGo(); });
   $('#music-pause').addEventListener('click', async () => {
+    if (musicBlocked()) return;
     if (smFollower()) {
       const wantPause = $('#music-pause').textContent === '⏸';
       await db('PATCH', `music/${smKey}/ctrl`, { paused: wantPause });
@@ -1269,6 +1341,7 @@ async function init() {
     } catch {}
   });
   $('#music-next').addEventListener('click', async () => {
+    if (musicBlocked()) return;
     if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { skipSeq: { '.sv': { increment: 1 } } }); return; }
     playNext();
   });
@@ -1280,11 +1353,21 @@ async function init() {
     applyDucking();
   });
   $('#music-stop').addEventListener('click', async () => {
+    if (musicBlocked()) return;
     if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { stopSeq: { '.sv': { increment: 1 } } }); return; }
     if (smIsHost) { await smKickAsHost(); return; }
     stopBot(false);
   });
+
+  // права хоста на музыку
+  $('#music-perms').addEventListener('click', openPerms);
+  $('#perm-close').addEventListener('click', () => $('#modal-perms').classList.add('hidden'));
+  $('#perm-lockall').addEventListener('change', (e) => {
+    hostPerms.lockAll = e.target.checked;
+    writeHostPerms();
+  });
   $('#music-volume').addEventListener('input', async (e) => {
+    if (musicBlocked()) return;
     const vol = e.target.value / 100;
     if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { volume: Math.round(vol * 100) }); return; }
     botVolume = vol;
