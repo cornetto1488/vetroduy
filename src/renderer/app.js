@@ -40,21 +40,32 @@ function findRoom(id) {
   return cfg.rooms.find((r) => r.id === id) || sharedRooms.find((r) => r.id === id) || null;
 }
 
+// комната, в которой сейчас реально идёт звонок (единственный живой webview кроме home)
+function callRoomId() {
+  return [...views.keys()].find((k) => k !== 'home') || null;
+}
+
 function activate(id) {
   const room = findRoom(id);
   if (!room) return;
   activeId = id;
 
-  // переход в другой канал = отключение от предыдущего
-  for (const key of [...views.keys()]) {
-    if (key !== id) destroyView(key);
+  if (id === 'home') {
+    // «Телемост» — утилита (создать встречу, скопировать ссылку).
+    // Звонок в текущей комнате НЕ рвём — он продолжается в фоне.
+    ensureView('home', HOME_URL);
+  } else {
+    // это голосовая комната: один звонок за раз — рвём другие комнаты (но не home)
+    for (const key of [...views.keys()]) {
+      if (key !== id && key !== 'home') destroyView(key);
+    }
+    ensureView(id, room.url);
   }
 
   $('#welcome').classList.add('hidden');
-  ensureView(id, room.url);
   views.forEach((wv, key) => wv.classList.toggle('active', key === id));
   renderRooms();
-  presenceHeartbeat(); // сразу отметиться в новой комнате
+  presenceHeartbeat(); // отметиться в комнате звонка
 }
 
 function destroyView(id) {
@@ -185,7 +196,7 @@ function updateSpeaking() {
   document.querySelectorAll('#room-list .room').forEach((btn) => {
     const nameEl = btn.querySelector('.room-name');
     let line = nameEl.querySelector('.speaking-line');
-    if (btn.dataset.id !== activeId || !speakingNames.length) {
+    if (btn.dataset.id !== callRoomId() || !speakingNames.length) {
       if (line) line.remove();
       return;
     }
@@ -212,7 +223,7 @@ async function pollCounts() {
         onSomeoneJoined(id, val);
       }
 
-      if (id === activeId) {
+      if (id === callRoomId()) {
         const sp = await wv.executeJavaScript(SPEAKER_SCRIPT, false);
         // обводка говорящего пульсирует — держим имя ещё пару опросов
         if (Array.isArray(sp) && sp.length) {
@@ -601,13 +612,38 @@ function renderQueue() {
   });
 }
 
-function enqueue(item) {
-  if (!activeId) { setMusicState('сначала зайди в комнату', false); return; }
+// ЛОКАЛЬНОЕ добавление в очередь (используется хостом и в режиме без бэкенда)
+function enqueueLocal(item) {
   const busy = !!pendingTrack || loadingTrack;
   queue.push(item);
   renderQueue();
   if (!busy) playNext();
   else setMusicState('в очередь: ' + item.name, true);
+  smPublish();
+}
+
+// Общий вход: решает, стать ли хостом, добавить в общую очередь или играть локально
+async function enqueue(item) {
+  const cr = callRoomId();
+  if (!cr) { setMusicState('сначала зайди в комнату', false); return; }
+  const key = smSessionKey();
+
+  if (key && !smIsHost) {
+    const hres = await db('GET', `music/${key}/host`);
+    const host = hres.ok ? hres.data : null;
+    if (hostFresh(host) && host.dev !== deviceId) {
+      // бот уже есть у другого — добавляем в ОБЩУЮ очередь, своего не поднимаем
+      await db('POST', `music/${key}/adds`, {
+        id: item.id || '', kind: item.kind || '', name: item.name, url: item.url || '', by: myName, ts: Date.now()
+      });
+      setMusicState('добавлено (бот у ' + (host.name || 'друга') + ')', true);
+      smEnsureFollow(key);
+      return;
+    }
+    // бота нет — становимся хостом
+    await smBecomeHost(key);
+  }
+  enqueueLocal(item);
 }
 
 async function playNext() {
@@ -645,7 +681,8 @@ async function playNext() {
     url: `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(url)}`
   };
   loadingTrack = false;
-  if (!botView || botRoomId !== activeId) startBot(activeId);
+  const cr = callRoomId();
+  if (!botView || botRoomId !== cr) startBot(cr);
   if (botJoined) playPending();
   else setMusicState('бот заходит в канал…', false);
 }
@@ -659,10 +696,182 @@ setInterval(async () => {
   } catch {}
 }, 2500);
 
+/* ============================================================
+   ОБЩИЙ музыкальный бот: 1 бот на комнату, синхронное управление.
+   Хост реально крутит бота (локальная логика выше), а Firebase —
+   канал синхронизации: /host (claim), /adds (чужие треки),
+   /ctrl (интенты управления), /view (что показывать остальным).
+   ============================================================ */
+let smKey = null;        // ключ комнаты общего сеанса
+let smIsHost = false;    // мы ли ведём бота
+let smHbTimer = null;    // heartbeat хоста
+let smTimer = null;      // цикл синхронизации
+let smLastSkip = 0;
+let smLastStop = 0;
+let smAppliedVol = null;
+
+function smSessionKey() {
+  const cr = callRoomId();
+  if (!backendReady() || !cr) return null;
+  const room = findRoom(cr);
+  return room ? urlKey(room.url) : null;
+}
+function hostFresh(h) { return !!(h && h.ts && Date.now() - h.ts < 25000); }
+function smFollower() { return !!(smKey && !smIsHost); }
+
+async function smBecomeHost(key) {
+  smKey = key;
+  smIsHost = true;
+  smLastSkip = 0; smLastStop = 0;
+  await db('PUT', `music/${key}/host`, { dev: deviceId, name: myName, ts: Date.now() });
+  if (smHbTimer) clearInterval(smHbTimer);
+  smHbTimer = setInterval(() => {
+    if (smIsHost && smKey) db('PUT', `music/${smKey}/host`, { dev: deviceId, name: myName, ts: Date.now() });
+  }, 8000);
+  smStartLoop();
+}
+
+function smEnsureFollow(key) {
+  smKey = key;
+  smIsHost = false;
+  smStartLoop();
+}
+
+function smStartLoop() {
+  if (smTimer) clearInterval(smTimer);
+  smTimer = setInterval(smTick, 2500);
+  smTick();
+}
+
+async function smTick() {
+  const cur = smSessionKey();
+  // сменили комнату звонка или вышли — снимаем сеанс
+  if (!cur || cur !== smKey) {
+    if (smIsHost && smKey) { // освобождаем claim, чтобы max-1 не блокировал
+      try { await db('DELETE', `music/${smKey}/host`); await db('DELETE', `music/${smKey}/view`); } catch {}
+    }
+    smTeardown();
+    return;
+  }
+  const res = await db('GET', `music/${smKey}`);
+  const m = res.ok ? (res.data || {}) : {};
+  if (smIsHost) await smHostTick(smKey, m);
+  else smFollowTick(m);
+}
+
+async function smHostTick(key, m) {
+  const ctrl = m.ctrl || {};
+  // кто-то выгнал бота
+  if ((ctrl.stopSeq || 0) > smLastStop) { smLastStop = ctrl.stopSeq; await smKickAsHost(); return; }
+  // забираем чужие треки в локальную очередь
+  if (m.adds) {
+    for (const id of Object.keys(m.adds).sort()) {
+      const a = m.adds[id];
+      await db('DELETE', `music/${key}/adds/${id}`);
+      enqueueLocal({ id: a.id, kind: a.kind, name: a.name, url: a.url });
+    }
+  }
+  // громкость
+  if (typeof ctrl.volume === 'number' && Math.abs(ctrl.volume / 100 - botVolume) > 0.001) {
+    botVolume = ctrl.volume / 100;
+    $('#music-volume').value = ctrl.volume;
+    lastDuckVol = null;
+    if (botView && botJoined) { try { await botView.executeJavaScript(`window.__bot && window.__bot.volume(${botVolume})`, false); } catch {} }
+  }
+  // пауза
+  if (ctrl.paused !== undefined && !!ctrl.paused !== isPaused) { await setPausedLocal(!!ctrl.paused); }
+  // скип
+  if ((ctrl.skipSeq || 0) > smLastSkip) { smLastSkip = ctrl.skipSeq; playNext(); }
+  smPublish();
+}
+
+function smFollowTick(m) {
+  if (!hostFresh(m.host)) {
+    // хост ушёл — по решению: музыка останавливается
+    setMusicState('бота нет', false);
+    $('#music-controls').classList.add('hidden');
+    renderQueueNames([]);
+    return;
+  }
+  const v = m.view || {};
+  setMusicState(v.now ? '▶ ' + v.now : 'бот в канале', true);
+  $('#music-controls').classList.remove('hidden');
+  $('#music-pause').textContent = v.paused ? '▶' : '⏸';
+  if (typeof v.volume === 'number') $('#music-volume').value = v.volume;
+  renderQueueNames(v.queue || [], v.hostName);
+}
+
+async function smPublish() {
+  if (!smIsHost || !smKey) return;
+  await db('PUT', `music/${smKey}/view`, {
+    hostName: myName,
+    now: pendingTrack ? pendingTrack.name : null,
+    paused: isPaused,
+    volume: Math.round(botVolume * 100),
+    queue: queue.slice(0, 20).map((q) => q.name),
+    ts: Date.now()
+  });
+}
+
+async function setPausedLocal(pause) {
+  if (!botView || !botJoined || !pendingTrack) return;
+  try {
+    if (pause) { await botView.executeJavaScript('window.__bot && window.__bot.pause()', false); isPaused = true; }
+    else {
+      const r = await botView.executeJavaScript('window.__bot ? window.__bot.resume() : "x"', false);
+      if (String(r).startsWith('playing')) isPaused = false; else playPending();
+    }
+    $('#music-pause').textContent = isPaused ? '▶' : '⏸';
+  } catch {}
+}
+
+// хост завершает сеанс (сам вышел / выгнали)
+async function smKickAsHost() {
+  const key = smKey;
+  smTeardown();
+  if (key) { try { await db('DELETE', `music/${key}`); } catch {} }
+  stopBot(false);
+}
+
+function smTeardown() {
+  smIsHost = false;
+  smKey = null;
+  if (smHbTimer) { clearInterval(smHbTimer); smHbTimer = null; }
+  if (smTimer) { clearInterval(smTimer); smTimer = null; }
+}
+
+// очередь только для отображения (у не-хоста)
+function renderQueueNames(names, hostName) {
+  const box = $('#music-queue');
+  box.innerHTML = '';
+  if (!names.length) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  names.forEach((n, i) => {
+    const row = document.createElement('div');
+    row.className = 'mq-item';
+    const label = document.createElement('span');
+    label.textContent = (i + 1) + '. ' + n;
+    row.appendChild(label);
+    box.appendChild(row);
+  });
+}
+
+// авто-обнаружение чужого бота в комнате звонка → пассивно показываем сеанс
+setInterval(async () => {
+  if (!backendReady() || smKey) return;
+  const cr = callRoomId();
+  if (!cr) return;
+  const room = findRoom(cr);
+  if (!room) return;
+  const key = urlKey(room.url);
+  const hres = await db('GET', `music/${key}/host`);
+  if (hostFresh(hres.ok ? hres.data : null)) smEnsureFollow(key);
+}, 4000);
+
 async function musicGo() {
   const q = $('#music-input').value.trim();
   if (!q) return;
-  if (!activeId) { setMusicState('сначала зайди в комнату', false); return; }
+  if (!callRoomId()) { setMusicState('сначала зайди в комнату', false); return; }
   const box = $('#music-results');
   box.innerHTML = '';
   box.classList.add('hidden');
@@ -804,7 +1013,8 @@ let lastPresenceKey = null;
 
 async function presenceHeartbeat() {
   if (!backendReady()) return;
-  const room = activeId && activeId !== 'home' ? findRoom(activeId) : null;
+  const rid = callRoomId(); // presence по комнате звонка, а не по видимой вкладке
+  const room = rid ? findRoom(rid) : null;
   const key = room ? urlKey(room.url) : null;
 
   // ушли из старой комнаты — убираем себя оттуда
@@ -845,7 +1055,7 @@ function checkPings() {
     const key = urlKey(room.url);
     const now = (presenceInfo[key] && presenceInfo[key].count) || 0;
     const before = prevPresence[key] || 0;
-    if (before === 0 && now > 0 && room.id !== activeId) {
+    if (before === 0 && now > 0 && room.id !== callRoomId()) {
       playPop();
       try { new Notification('ВЕТРОДУЙ', { body: `🔔 В «${room.name}» кто-то появился (${now})`, silent: true }); } catch {}
     }
@@ -961,7 +1171,8 @@ async function init() {
   // трей и глобальный хоткей
   window.api.onRoomActivate((id) => activate(id));
   window.api.onMuteHotkey(async () => {
-    const wv = activeId ? views.get(activeId) : null;
+    const cr = callRoomId();
+    const wv = cr ? views.get(cr) : null;
     if (wv && wv.dataset.ready) {
       try { await wv.executeJavaScript(MUTE_SCRIPT, false); } catch {}
     }
@@ -1030,6 +1241,12 @@ async function init() {
   $('#music-play').addEventListener('click', musicGo);
   $('#music-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') musicGo(); });
   $('#music-pause').addEventListener('click', async () => {
+    if (smFollower()) {
+      const wantPause = $('#music-pause').textContent === '⏸';
+      await db('PATCH', `music/${smKey}/ctrl`, { paused: wantPause });
+      $('#music-pause').textContent = wantPause ? '▶' : '⏸';
+      return;
+    }
     if (!botView || !botJoined || !pendingTrack) return;
     try {
       if (isPaused) {
@@ -1048,9 +1265,13 @@ async function init() {
         $('#music-pause').textContent = '▶';
         setMusicState('⏸ пауза: ' + pendingTrack.name, false);
       }
+      smPublish();
     } catch {}
   });
-  $('#music-next').addEventListener('click', () => playNext());
+  $('#music-next').addEventListener('click', async () => {
+    if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { skipSeq: { '.sv': { increment: 1 } } }); return; }
+    playNext();
+  });
   $('#music-duck').addEventListener('click', () => {
     duckingEnabled = !duckingEnabled;
     $('#music-duck').classList.toggle('active', duckingEnabled);
@@ -1058,9 +1279,15 @@ async function init() {
     lastDuckVol = null; // пересчитать громкость немедленно
     applyDucking();
   });
-  $('#music-stop').addEventListener('click', () => stopBot(false));
+  $('#music-stop').addEventListener('click', async () => {
+    if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { stopSeq: { '.sv': { increment: 1 } } }); return; }
+    if (smIsHost) { await smKickAsHost(); return; }
+    stopBot(false);
+  });
   $('#music-volume').addEventListener('input', async (e) => {
-    botVolume = e.target.value / 100;
+    const vol = e.target.value / 100;
+    if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { volume: Math.round(vol * 100) }); return; }
+    botVolume = vol;
     lastDuckVol = null; // слайдер важнее — сбрасываем дакинг-кэш
     if (botView && botJoined) {
       // если сейчас идёт приглушение — не перебиваем его полным звуком
@@ -1069,6 +1296,7 @@ async function init() {
       lastDuckVol = v;
       try { await botView.executeJavaScript(`window.__bot && window.__bot.volume(${v})`, false); } catch {}
     }
+    smPublish();
   });
 
   // закрытие модалок по клику на фон / Escape
