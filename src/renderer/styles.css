@@ -219,6 +219,13 @@ body.dropping::after {
 }
 #music-volume { flex: 1; accent-color: var(--accent); }
 
+/* лого и название в шапке кликабельны — уводят на главную */
+#home-logo, #home-title { cursor: pointer; -webkit-app-region: no-drag; transition: opacity .15s, transform .15s; }
+#home-logo:hover, #home-title:hover { opacity: .8; }
+#home-logo:active, #home-title:active { transform: scale(.95); }
+
+/* анимированный логотип — APNG с настоящей прозрачностью, фон не нужен */
+
 /* ---------- занавес подключения ---------- */
 #join-curtain {
   position: absolute; inset: 0; z-index: 30;
@@ -227,11 +234,8 @@ body.dropping::after {
   background: radial-gradient(1100px 700px at 75% -10%, #1c2050 0%, #0d1024 60%);
 }
 #join-curtain.hidden { display: none; }
-.jc-logo { width: 96px; height: 96px; object-fit: contain; animation: jc-breathe 2.4s ease-in-out infinite; }
-@keyframes jc-breathe {
-  0%, 100% { transform: scale(1); opacity: .92; }
-  50% { transform: scale(1.06); opacity: 1; }
-}
+/* гифка сама «дышит» вентилятором — лишнюю пульсацию убираем */
+.jc-logo { width: 132px; height: 132px; object-fit: contain; }
 .jc-title { font-size: 22px; font-weight: 800; letter-spacing: 3px; }
 .jc-text { font-size: 13px; color: var(--text-dim); }
 .jc-dots { display: flex; gap: 6px; }

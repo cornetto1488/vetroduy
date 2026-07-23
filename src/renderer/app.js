@@ -46,6 +46,17 @@ function ensureView(id, url) {
   return wv;
 }
 
+/* «На главную» по клику на лого/название. Звонок при этом НЕ рвём —
+   вьюха комнаты просто прячется и продолжает жить в фоне. */
+function goHome() {
+  activeId = null;
+  views.forEach((wv) => wv.classList.remove('active'));
+  $('#welcome').classList.remove('hidden');
+  $('#watch-overlay').classList.add('hidden');
+  updateCurtain();
+  renderRooms();
+}
+
 function findRoom(id) {
   if (id === 'home') return { id: 'home', name: 'Телемост', url: HOME_URL };
   return cfg.rooms.find((r) => r.id === id) || sharedRooms.find((r) => r.id === id) || null;
@@ -1046,7 +1057,7 @@ async function musicGo() {
   }
 }
 
-/* ---------- ИИ-диджей: сам находит трек и сразу ставит ---------- */
+/* ---------- воздухан: сам находит трек и сразу ставит ---------- */
 const DJ_MOODS = {
   'весёл|весел|позитив|качов|кач|туса|туc|праздник': ['party hits', 'фонк качалка', 'русский хип хоп 2024', 'зарубежные хиты'],
   'груст|печал|медлен|лирик|душев': ['грустный рэп', 'sad russian', 'лирика рэп', 'ambient sad'],
@@ -1080,7 +1091,7 @@ async function djPlay(query) {
   enqueue({ kind: 'sc', url: t.url, name: t.title });
 }
 
-/* ---------- голосовой диджей: слушает мик и понимает команды ---------- */
+/* ---------- воздухан: слушает мик и понимает команды ---------- */
 let djOn = false, djModel = null, djRec = null, djStream = null, djCtx = null, djNode = null, djBusy = false;
 // порог «тут говорят» и состояние текущей фразы
 const DJ_GATE = 0.012;
@@ -1131,7 +1142,7 @@ async function djStart() {
   if (!callRoomId()) { setMusicState('сначала зайди в комнату', false); return; }
   if (typeof Vosk === 'undefined') { setMusicState('🎧 распознавание не загрузилось', false); return; }
   try {
-    setMusicState('🎧 бужу диджея…', false);
+    setMusicState('🎧 бужу воздухана…', false);
     const m = await window.api.djModel();      // ~44 МБ, качается один раз
     if (!m.ok) { setMusicState('🎧 не скачалась модель: ' + m.error, false); return; }
     if (!djModel) {
@@ -1192,7 +1203,7 @@ async function djStart() {
     djOn = true;
     $('#music-dj').classList.add('dj-on');
     $('#dj-hint').classList.remove('hidden');
-    setMusicState('🎧 диджей слушает', true);
+    setMusicState('🎧 воздухан слушает', true);
   } catch (err) {
     setMusicState('🎧 не вышло: ' + (err.message || err), false);
     djStop(true);
@@ -1209,7 +1220,7 @@ function djStop(quiet) {
   $('#music-dj').classList.remove('dj-on');
   $('#dj-hint').classList.add('hidden');
   djLog('');
-  if (!quiet) setMusicState('🎧 диджей ушёл', false);
+  if (!quiet) setMusicState('🎧 воздухан ушёл', false);
 }
 
 /* Воздухан по умолчанию всегда слушает: включается сам при заходе в комнату.
@@ -1692,6 +1703,10 @@ async function init() {
     refreshShared();
   });
 
+  // лого и название в шапке = на главную
+  $('#home-logo').addEventListener('click', goHome);
+  $('#home-title').addEventListener('click', goHome);
+
   // кинотеатр (watch party)
   $('#watch-btn').addEventListener('click', openWatch);
   $('#watch-close').addEventListener('click', closeWatch);
@@ -1755,7 +1770,7 @@ async function init() {
     stopBot(false);
   });
 
-  // голосовой диджей: 🎧 зовёт/прогоняет, дальше он слушает мик
+  // воздухан: 🎧 зовёт/прогоняет, дальше он слушает мик
   $('#music-dj').addEventListener('click', djToggle);
   window.api.onDjProgress((pct) => { if (!djOn) setMusicState('🎧 качаю голосовой движок ' + pct + '%', false); });
 

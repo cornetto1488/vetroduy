@@ -539,6 +539,30 @@ const TRANSLIT = {
   ь: '', э: 'e', ю: 'yu', я: 'ya'
 };
 
+// Английские имена Vosk пишет кириллицей на слух («билли айлиш»), а
+// транслитерация даёт «billi aylish» — мимо. Поэтому держим словарь:
+// как слышится по-русски → как реально пишется на SoundCloud.
+const ARTISTS_EN = {
+  'линкин парк': 'Linkin Park', 'билли айлиш': 'Billie Eilish', 'зе уикенд': 'The Weeknd',
+  'уикенд': 'The Weeknd', 'имеджин драгонс': 'Imagine Dragons', 'имэджин драгонс': 'Imagine Dragons',
+  'имеджин дрэгонс': 'Imagine Dragons', 'ариана гранде': 'Ariana Grande', 'дрейк': 'Drake',
+  'канье уэст': 'Kanye West', 'канье': 'Kanye West', 'трэвис скотт': 'Travis Scott',
+  'трэвис скот': 'Travis Scott', 'пост малоун': 'Post Malone', 'дуа липа': 'Dua Lipa',
+  'эд ширан': 'Ed Sheeran', 'тейлор свифт': 'Taylor Swift', 'бейонсе': 'Beyonce',
+  'рианна': 'Rihanna', 'металлика': 'Metallica', 'нирвана': 'Nirvana', 'куин': 'Queen',
+  'пинк флойд': 'Pink Floyd', 'ред хот чили пепперс': 'Red Hot Chili Peppers',
+  'систем оф э даун': 'System of a Down', 'слипкнот': 'Slipknot', 'рамштайн': 'Rammstein',
+  'дэвид боуи': 'David Bowie', 'майкл джексон': 'Michael Jackson', 'кендрик ламар': 'Kendrick Lamar',
+  'джей коул': 'J. Cole', 'тупак': '2Pac', 'ту пак': '2Pac', 'снуп дог': 'Snoop Dogg',
+  'доджа кэт': 'Doja Cat', 'лил пип': 'Lil Peep', 'тентасьон': 'XXXTentacion',
+  'джус ворлд': 'Juice WRLD', 'плейбой карти': 'Playboi Carti', 'дэдмаус': 'deadmau5',
+  'дэвид гетта': 'David Guetta', 'мартин гаррикс': 'Martin Garrix', 'скриллекс': 'Skrillex',
+  'дафт панк': 'Daft Punk', 'гориллаз': 'Gorillaz', 'колдплей': 'Coldplay',
+  'битлз': 'The Beatles', 'зе битлз': 'The Beatles', 'ганз эн роузес': "Guns N' Roses",
+  'дип перпл': 'Deep Purple', 'бон джови': 'Bon Jovi', 'твенти уан пайлотс': 'Twenty One Pilots',
+  'эй си ди си': 'AC/DC', 'дискорд': 'Discord'
+};
+
 // имена, где простая транслитерация промахивается
 const ARTISTS = {
   'моргенштерн': 'MORGENSHTERN', 'оксимирон': 'Oxxxymiron', 'хаски': 'Husky',
@@ -555,15 +579,60 @@ function translit(s) {
   return String(s).toLowerCase().split('').map((ch) => (ch in TRANSLIT ? TRANSLIT[ch] : ch)).join('');
 }
 
+// Поиск SoundCloud опечаток НЕ прощает: «mak demarko» находит постороннего
+// MAK11, а «mac demarco» — настоящего артиста. В английских именах на месте
+// русского «к» почти всегда «c», поэтому готовим и такой вариант написания.
+// Короткие английские слова Vosk пишет на слух («зе», «ай», «оф»).
+// Побуквенная транслитерация из них делает мусор, поэтому меняем их
+// на настоящие слова до транслитерации.
+const EN_WORDS = {
+  'зе': 'the', 'ай': 'i', 'оф': 'of', 'энд': 'and', 'май': 'my', 'ин': 'in',
+  'он': 'on', 'ит': 'it', 'из': 'is', 'ми': 'me', 'лав': 'love', 'ю': 'you',
+  'найт': 'night', 'лайф': 'life', 'тайм': 'time', 'гёрл': 'girl', 'бой': 'boy',
+  'бэд': 'bad', 'ноу': 'no', 'уан': 'one', 'фо': 'for', 'ху': 'who', 'вэй': 'way'
+};
+
+function translitEn(s) {
+  const words = String(s).toLowerCase().split(/\s+/)
+    .map((w) => (EN_WORDS[w] !== undefined ? EN_WORDS[w] : translit(w).replace(/k/g, 'c')));
+  return words.join(' ');
+}
+
 function queryVariants(q) {
   const raw = String(q || '').trim();
   const low = raw.toLowerCase();
-  const out = [raw];
-  for (const ru in ARTISTS) {
-    if (low.includes(ru)) { out.push(low.split(ru).join(ARTISTS[ru])); break; }
+  // длинные имена проверяем первыми, иначе «линкин парк» схлопнется по «парк»
+  const dict = { ...ARTISTS_EN, ...ARTISTS };
+  const keys = Object.keys(dict).sort((a, b) => b.length - a.length);
+  for (const ru of keys) {
+    if (low.includes(ru)) return [...new Set([raw, low.split(ru).join(dict[ru])])];
   }
-  if (/[а-яё]/i.test(raw)) out.push(translit(raw));
-  return [...new Set(out.filter(Boolean))].slice(0, 2);
+  if (!/[а-яё]/i.test(raw)) return [raw];
+  // ищем всеми написаниями сразу — параллельно, поэтому по времени почти даром
+  return [...new Set([raw, translit(raw), translitEn(raw)].filter(Boolean))].slice(0, 3);
+}
+
+// Расстояние Левенштейна: транслитерация даёт «mak demarko», а в
+// названии стоит «Mac DeMarco» — точного совпадения нет никогда, и без
+// нечёткого сравнения любой англоязычный артист проигрывал русской
+// песне, где его имя просто упомянуто в заголовке.
+function lev(a, b) {
+  if (a === b) return 0;
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function sim(a, b) {
+  if (!a || !b) return 0;
+  const n = Math.max(a.length, b.length);
+  return n ? 1 - lev(a, b) / n : 0;
 }
 
 // Насколько результат похож на то, что просили. Имя в позиции артиста
@@ -572,7 +641,7 @@ function queryVariants(q) {
 function scoreItem(item, variants) {
   const title = (item.title || '').toLowerCase();
   const chan = (item.channel || '').toLowerCase();
-  const artistPart = title.split(/\s[-–—]\s/)[0];
+  const artistPart = title.split(/\s[-–—]\s/)[0].trim();
   const hay = title + ' ' + chan;
   let best = 0;
   for (const v of variants) {
@@ -582,6 +651,9 @@ function scoreItem(item, variants) {
     let s = toks.filter((t) => hay.includes(t)).length / toks.length;
     if (hay.includes(vv)) s += 0.4;                                  // фраза целиком
     if (artistPart.includes(vv) || chan.includes(vv)) s += 0.8;      // это правда его трек
+    // почти совпало по написанию в позиции артиста — тоже его трек
+    const fuzzy = Math.max(sim(artistPart, vv), sim(chan, vv));
+    if (fuzzy > 0.72) s += 0.9 * fuzzy;
     best = Math.max(best, s);
   }
   return best;
