@@ -627,7 +627,11 @@ ipcMain.handle('music:songsearch', async (e, q) => {
 ipcMain.handle('music:songurl', async (e, url) => {
   try {
     if (!/^https?:\/\//.test(String(url || ''))) throw new Error('нужна ссылка на трек');
-    const out = await runYtdlp(['-f', 'bestaudio/best', '-g', String(url)], 40000);
+    // ТОЛЬКО прогрессивный http-поток. bestaudio на SoundCloud выбирает
+    // HLS (.m3u8), а <audio> в Chromium его не проигрывает — музыка молча
+    // не заводилась вообще никогда. Рядом всегда лежит обычный mp3.
+    const fmt = 'bestaudio[protocol^=http]/best[protocol^=http]/bestaudio/best';
+    const out = await runYtdlp(['-f', fmt, '-g', String(url)], 40000);
     const direct = out.split(/\r?\n/).filter(Boolean)[0];
     if (!/^https?:\/\//.test(direct || '')) throw new Error('прямая ссылка не получена');
     return { ok: true, url: direct };
@@ -635,6 +639,18 @@ ipcMain.handle('music:songurl', async (e, url) => {
     return { ok: false, error: String(err.message || err).slice(0, 200) };
   }
 });
+
+// ---------- диагностика падений ----------
+// Пишем причину смерти рендерера/дочерних процессов в файл рядом с настройками,
+// иначе краш выглядит как «просто закрылось» и чинить его нечем.
+function crashLog(what, details) {
+  try {
+    const line = new Date().toISOString() + ' ' + what + ' ' + JSON.stringify(details) + '\n';
+    fs.appendFileSync(path.join(app.getPath('userData'), 'crash.log'), line);
+  } catch {}
+}
+app.on('render-process-gone', (e, wc, details) => crashLog('render-process-gone', details));
+app.on('child-process-gone', (e, details) => crashLog('child-process-gone', details));
 
 ipcMain.handle('app:version', () => app.getVersion());
 

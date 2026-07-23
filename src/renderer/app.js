@@ -74,6 +74,7 @@ function activate(id) {
   }
 
   $('#welcome').classList.add('hidden');
+  if (id !== 'home') djAutoStart();
   updateCurtain();
   views.forEach((wv, key) => wv.classList.toggle('active', key === id));
   renderRooms();
@@ -1081,6 +1082,9 @@ async function djPlay(query) {
 
 /* ---------- голосовой диджей: слушает мик и понимает команды ---------- */
 let djOn = false, djModel = null, djRec = null, djStream = null, djCtx = null, djNode = null, djBusy = false;
+// порог «тут говорят» и состояние текущей фразы
+const DJ_GATE = 0.012;
+let djSpeaking = false, djSilence = 0, djHeardSec = 0, djPrev = null;
 
 function djSetVolume(delta) {
   const el = $('#music-volume');
@@ -1089,14 +1093,23 @@ function djSetVolume(delta) {
   setMusicState('🎧 громкость ' + el.value, true);
 }
 
-// Реагируем только на обращение по имени — иначе музыка из колонок
-// и обычный трёп будут дёргать диджея без конца.
+/* Зовут его «воздухан», но в словаре Vosk такого слова нет — вживую он
+   слышит «воздуха» или «воздух энн». Поэтому ловим все эти варианты
+   (и «диджей» заодно оставляем). */
+// [а-яё]*, а не \w* — \w в JS кириллицу не ловит, и «воздуха» резалось
+// до «воздух», а лишняя «а» утекала в текст команды
+const DJ_WAKE = /(?:^|\s)(?:возду[хш][а-яё]*|ди\s?дж[еэ]й|дижей)(?:\s+(?:энн?|ан|он|н))?[\s,]*/;
+const DJ_VERB = /^(включи|включай|поставь|ставь|давай|найди|запусти|врубай|врубить|сыграй|дальше|следующ|скип|пропусти|переключи|другой|другую|пауза|паузу|останови|продолж|стоп|стой|выключи|хватит|уйди|заткнись|громче|погромче|тише|потише|сделай|что-?нибудь|что-?то|рандом)/;
+
 function djHeard(text) {
   const t = (text || '').toLowerCase().trim();
-  const m = t.match(/(?:диджей|ди\s?джей|диджэй|дижей|ди\s?джей)\s*,?\s*(.*)$/);
+  const m = t.match(DJ_WAKE);
   if (!m) return;
-  const cmd = m[1].trim();
+  const cmd = t.slice(m.index + m[0].length).trim();
   if (!cmd) return;
+  // «свежий воздух сегодня» — это не команда: если обращение не в начале
+  // фразы, требуем понятный глагол, иначе молчим
+  if (m.index !== 0 && !DJ_VERB.test(cmd)) return;
   djLog('услышал: ' + cmd);
 
   if (/^(стоп|стой|выключи|хватит|уйди|заткнись|тихо)/.test(cmd)) { $('#music-stop').click(); setMusicState('🎧 окей, выключаю', false); return; }
@@ -1141,9 +1154,37 @@ async function djStart() {
     });
     const src = djCtx.createMediaStreamSource(djStream);
     djNode = djCtx.createScriptProcessor(4096, 1, 1);
+    // Кормим распознаватель ТОЛЬКО когда реально говорят. Если гнать в него
+    // всё подряд, он на играющей рядом музыке никогда не «закрывает» фразу,
+    // копит состояние и вместе с webview'ами доводит вкладку до нехватки
+    // памяти — приложение падало именно из-за этого.
     djNode.onaudioprocess = (e) => {
       if (!djOn || !djRec) return;
-      try { djRec.acceptWaveformFloat(e.inputBuffer.getChannelData(0), djCtx.sampleRate); } catch {}
+      const buf = e.inputBuffer.getChannelData(0);
+      const rate = djCtx.sampleRate;
+      let sum = 0;
+      for (let i = 0; i < buf.length; i += 4) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / (buf.length / 4));
+      try {
+        if (rms > DJ_GATE) {
+          if (!djSpeaking) {                       // старт фразы: добавим чуть предыдущего
+            djSpeaking = true; djHeardSec = 0;
+            if (djPrev) djRec.acceptWaveformFloat(djPrev, rate);
+          }
+          djSilence = 0;
+          djHeardSec += buf.length / rate;
+          djRec.acceptWaveformFloat(buf, rate);
+        } else if (djSpeaking) {
+          djSilence += buf.length / rate;
+          djRec.acceptWaveformFloat(buf, rate);    // хвост фразы тоже нужен
+        }
+        // пауза после речи либо слишком длинная фраза — закрываем и сбрасываем
+        if (djSpeaking && (djSilence > 0.9 || djHeardSec > 12)) {
+          djSpeaking = false; djSilence = 0; djHeardSec = 0;
+          djRec.retrieveFinalResult();
+        }
+      } catch {}
+      djPrev = buf.slice(0);
     };
     src.connect(djNode);
     const mute = djCtx.createGain(); mute.gain.value = 0;  // в тишину, чтобы не эхо в динамики
@@ -1164,13 +1205,31 @@ function djStop(quiet) {
   try { if (djStream) djStream.getTracks().forEach((t) => t.stop()); } catch {}
   try { if (djRec) djRec.remove(); } catch {}   // контекст общий — его не закрываем
   djNode = djStream = djCtx = djRec = null;
+  djSpeaking = false; djSilence = 0; djHeardSec = 0; djPrev = null;
   $('#music-dj').classList.remove('dj-on');
   $('#dj-hint').classList.add('hidden');
   djLog('');
   if (!quiet) setMusicState('🎧 диджей ушёл', false);
 }
 
-function djToggle() { djOn ? djStop() : djStart(); }
+/* Воздухан по умолчанию всегда слушает: включается сам при заходе в комнату.
+   Кнопку оставляем — выбор запоминается, чтобы его можно было прогнать. */
+function djToggle() {
+  if (djOn) {
+    djStop();
+    cfg.djAuto = false;
+    try { window.api.setConfig({ djAuto: false }); } catch {}
+  } else {
+    cfg.djAuto = true;
+    try { window.api.setConfig({ djAuto: true }); } catch {}
+    djStart();
+  }
+}
+
+function djAutoStart() {
+  if (djOn || cfg.djAuto === false) return;
+  setTimeout(() => { if (!djOn && cfg.djAuto !== false && callRoomId()) djStart(); }, 2500);
+}
 
 /* ---------- модалка комнаты ---------- */
 function normalizeTelemostUrl(raw) {
