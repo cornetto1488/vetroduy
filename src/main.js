@@ -527,21 +527,97 @@ function fmtDuration(sec) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
-// Поиск песен через SoundCloud (в России не заблокирован, без логина),
-// а не YouTube. yt-dlp умеет scsearch и резолвит прямой поток.
+/* ---------- поиск музыки: русская речь → латинские имена артистов ----------
+   Голосовой диджей распознаёт по-русски («моргенштерн»), а на SoundCloud
+   артист называется латиницей (MORGENSHTERN). Поэтому ищем сразу обоими
+   написаниями параллельно и ранжируем объединённую выдачу. */
+
+const TRANSLIT = {
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i',
+  й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't',
+  у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y',
+  ь: '', э: 'e', ю: 'yu', я: 'ya'
+};
+
+// имена, где простая транслитерация промахивается
+const ARTISTS = {
+  'моргенштерн': 'MORGENSHTERN', 'оксимирон': 'Oxxxymiron', 'хаски': 'Husky',
+  'гуф': 'Guf', 'баста': 'Basta', 'тимати': 'Timati', 'джиган': 'Djigan',
+  'элджей': 'Eldzhey', 'фейс': 'FACE', 'эндшпиль': 'Endspiel', 'лсп': 'LSP',
+  'биг бейби тейп': 'Big Baby Tape', 'биг бэйби тейп': 'Big Baby Tape',
+  'каспийский груз': 'Kaspiyskiy Gruz', 'мияги': 'Miyagi', 'кизару': 'Kizaru',
+  'скриптонит': 'Skriptonit', 'инстасамка': 'INSTASAMKA', 'макан': 'MACAN',
+  'платина': 'Platina', 'кровосток': 'Кровосток', 'джизус': 'Jizus',
+  'пошлая молли': 'Poshlaya Molly', 'слава кпсс': 'Слава КПСС', 'обе две': 'Обе-Две'
+};
+
+function translit(s) {
+  return String(s).toLowerCase().split('').map((ch) => (ch in TRANSLIT ? TRANSLIT[ch] : ch)).join('');
+}
+
+function queryVariants(q) {
+  const raw = String(q || '').trim();
+  const low = raw.toLowerCase();
+  const out = [raw];
+  for (const ru in ARTISTS) {
+    if (low.includes(ru)) { out.push(low.split(ru).join(ARTISTS[ru])); break; }
+  }
+  if (/[а-яё]/i.test(raw)) out.push(translit(raw));
+  return [...new Set(out.filter(Boolean))].slice(0, 2);
+}
+
+// Насколько результат похож на то, что просили. Имя в позиции артиста
+// («Артист - Трек» или загрузивший) весит куда больше, чем упоминание
+// где-то в названии — иначе на «оксимирон» вылезают диссы про него.
+function scoreItem(item, variants) {
+  const title = (item.title || '').toLowerCase();
+  const chan = (item.channel || '').toLowerCase();
+  const artistPart = title.split(/\s[-–—]\s/)[0];
+  const hay = title + ' ' + chan;
+  let best = 0;
+  for (const v of variants) {
+    const vv = v.toLowerCase();
+    const toks = vv.split(/\s+/).filter((t) => t.length > 2);
+    if (!toks.length) continue;
+    let s = toks.filter((t) => hay.includes(t)).length / toks.length;
+    if (hay.includes(vv)) s += 0.4;                                  // фраза целиком
+    if (artistPart.includes(vv) || chan.includes(vv)) s += 0.8;      // это правда его трек
+    best = Math.max(best, s);
+  }
+  return best;
+}
+
+async function scSearch(q) {
+  // -J дампит JSON с \uXXXX-экранированием — кириллица не зависит от кодировки консоли
+  const out = await runYtdlp(['scsearch8:' + q, '--flat-playlist', '--no-warnings', '-J'], 30000);
+  const data = JSON.parse(out);
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  return entries.map((en) => ({
+    url: en.url || en.webpage_url || '',
+    dur: fmtDuration(en.duration),
+    title: en.title || '',
+    channel: en.uploader || en.channel || ''
+  })).filter((x) => x.url && x.title);
+}
+
 ipcMain.handle('music:songsearch', async (e, q) => {
   try {
-    // -J дампит JSON с \uXXXX-экранированием — кириллица не зависит от кодировки консоли
-    const out = await runYtdlp(['scsearch8:' + q, '--flat-playlist', '--no-warnings', '-J'], 30000);
-    const data = JSON.parse(out);
-    const entries = Array.isArray(data.entries) ? data.entries : [];
-    const items = entries.map((en) => ({
-      url: en.url || en.webpage_url || '',
-      dur: fmtDuration(en.duration),
-      title: en.title || '',
-      channel: en.uploader || en.channel || ''
-    })).filter((x) => x.url && x.title);
-    return { ok: true, items };
+    const variants = queryVariants(q);
+    // параллельно, иначе два поиска подряд ощутимо тормозят
+    const packs = await Promise.all(variants.map((v) => scSearch(v).catch(() => [])));
+    const seen = new Set();
+    const merged = [];
+    packs.forEach((pack, vi) => {
+      pack.forEach((it, i) => {
+        if (seen.has(it.url)) return;
+        seen.add(it.url);
+        // место в выдаче тоже учитываем, но слабее, чем совпадение по имени
+        merged.push({ ...it, _s: scoreItem(it, variants) - (i * 0.02) - (vi * 0.01) });
+      });
+    });
+    if (!merged.length) return { ok: true, items: [] };
+    merged.sort((a, b) => b._s - a._s);
+    return { ok: true, items: merged.map(({ _s, ...it }) => it) };
   } catch (err) {
     return { ok: false, error: String(err.message || err).slice(0, 200) };
   }

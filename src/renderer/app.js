@@ -39,6 +39,7 @@ function ensureView(id, url) {
     }
     startJoinLoop(id, wv);
   });
+  if (id !== 'home') showCurtain(id, (findRoom(id) || {}).name || 'комнате');
   wv.addEventListener('did-navigate', () => applyReskin(wv));
   $('#views').appendChild(wv);
   views.set(id, wv);
@@ -73,6 +74,7 @@ function activate(id) {
   }
 
   $('#welcome').classList.add('hidden');
+  updateCurtain();
   views.forEach((wv, key) => wv.classList.toggle('active', key === id));
   renderRooms();
   presenceHeartbeat(); // отметиться в комнате звонка
@@ -173,16 +175,37 @@ function applyReskin(wv) {
   try { wv.insertCSS(RESKIN_CSS); } catch {}
 }
 
+/* ---------- занавес: пока прокликиваем Телемост, показываем лого ---------- */
+let curtainFor = null;
+
+function updateCurtain() {
+  $('#join-curtain').classList.toggle('hidden', !(curtainFor && curtainFor === activeId));
+}
+function showCurtain(id, name) {
+  curtainFor = id;
+  $('#jc-text').textContent = 'подключаемся к «' + name + '»…';
+  updateCurtain();
+}
+function hideCurtain(id) {
+  if (id && curtainFor !== id) return;
+  curtainFor = null;
+  updateCurtain();
+}
+
 function startJoinLoop(id, wv) {
   if (wv.dataset.joining) return;
   wv.dataset.joining = '1';
   let tries = 0;
+  // страховка: занавес не должен висеть вечно, если Телемост изменится
+  const failsafe = setTimeout(() => hideCurtain(id), 30000);
   const t = setInterval(async () => {
-    if (!views.has(id) || views.get(id) !== wv) { clearInterval(t); return; }
-    if (++tries > 60) { clearInterval(t); return; }
+    if (!views.has(id) || views.get(id) !== wv) { clearInterval(t); clearTimeout(failsafe); hideCurtain(id); return; }
+    if (++tries > 60) { clearInterval(t); clearTimeout(failsafe); hideCurtain(id); return; }
     try {
       const st = await wv.executeJavaScript(autoJoinScript(cfg.userName || ''), false);
-      if (st === 'joined') clearInterval(t);
+      if (st === 'joined') { clearInterval(t); clearTimeout(failsafe); hideCurtain(id); }
+      // без сохранённого имени человек вводит его сам — экран прятать нельзя
+      else if (!cfg.userName && st === 'wait') { clearTimeout(failsafe); hideCurtain(id); }
     } catch {}
   }, 1500);
 }
@@ -1105,13 +1128,21 @@ async function djStart() {
     djStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
-    djCtx = new AudioContext({ sampleRate: 16000 });
+    // ВАЖНО: используем общий контекст на родной частоте устройства.
+    // Отдельный AudioContext на 16 кГц роняет аудио-движок, когда рядом
+    // играет звук из контекста с другой частотой (звук захода в комнату).
+    // Vosk сам пересемплирует — ему достаточно передать реальную частоту.
+    if (!audioCtx) audioCtx = new AudioContext();
+    try { if (audioCtx.state === 'suspended') await audioCtx.resume(); } catch {}
+    djCtx = audioCtx;
     djRec = new djModel.KaldiRecognizer(djCtx.sampleRate);
-    djRec.on('result', (msg) => { const t = msg && msg.result && msg.result.text; if (t) djHeard(t); });
+    djRec.on('result', (msg) => {
+      try { const t = msg && msg.result && msg.result.text; if (t) djHeard(t); } catch {}
+    });
     const src = djCtx.createMediaStreamSource(djStream);
     djNode = djCtx.createScriptProcessor(4096, 1, 1);
     djNode.onaudioprocess = (e) => {
-      if (!djOn) return;
+      if (!djOn || !djRec) return;
       try { djRec.acceptWaveformFloat(e.inputBuffer.getChannelData(0), djCtx.sampleRate); } catch {}
     };
     src.connect(djNode);
@@ -1131,8 +1162,7 @@ function djStop(quiet) {
   djOn = false;
   try { if (djNode) { djNode.onaudioprocess = null; djNode.disconnect(); } } catch {}
   try { if (djStream) djStream.getTracks().forEach((t) => t.stop()); } catch {}
-  try { if (djCtx) djCtx.close(); } catch {}
-  try { if (djRec) djRec.remove(); } catch {}
+  try { if (djRec) djRec.remove(); } catch {}   // контекст общий — его не закрываем
   djNode = djStream = djCtx = djRec = null;
   $('#music-dj').classList.remove('dj-on');
   $('#dj-hint').classList.add('hidden');
