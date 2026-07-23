@@ -491,35 +491,34 @@ function fmtDuration(sec) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
-ipcMain.handle('music:ytsearch', async (e, q) => {
+// Поиск песен через SoundCloud (в России не заблокирован, без логина),
+// а не YouTube. yt-dlp умеет scsearch и резолвит прямой поток.
+ipcMain.handle('music:songsearch', async (e, q) => {
   try {
     // -J дампит JSON с \uXXXX-экранированием — кириллица не зависит от кодировки консоли
-    const out = await runYtdlp(['ytsearch6:' + q, '--flat-playlist', '--no-warnings', '-J'], 30000);
+    const out = await runYtdlp(['scsearch8:' + q, '--flat-playlist', '--no-warnings', '-J'], 30000);
     const data = JSON.parse(out);
     const entries = Array.isArray(data.entries) ? data.entries : [];
     const items = entries.map((en) => ({
-      id: en.id,
+      url: en.url || en.webpage_url || '',
       dur: fmtDuration(en.duration),
       title: en.title || '',
-      channel: en.channel || en.uploader || ''
-    })).filter((x) => x.id && x.title);
+      channel: en.uploader || en.channel || ''
+    })).filter((x) => x.url && x.title);
     return { ok: true, items };
   } catch (err) {
     return { ok: false, error: String(err.message || err).slice(0, 200) };
   }
 });
 
-ipcMain.handle('music:yturl', async (e, id) => {
+// резолв прямого потока по URL трека (SoundCloud или любой поддерживаемый yt-dlp)
+ipcMain.handle('music:songurl', async (e, url) => {
   try {
-    const safeId = String(id).replace(/[^\w-]/g, '');
-    // берём самый высокий битрейт (opus обычно лучше m4a), m4a — запасной
-    const out = await runYtdlp([
-      '-f', 'bestaudio[acodec=opus]/bestaudio/best',
-      '-g', 'https://www.youtube.com/watch?v=' + safeId
-    ], 40000);
-    const url = out.split(/\r?\n/).filter(Boolean)[0];
-    if (!/^https?:\/\//.test(url || '')) throw new Error('прямая ссылка не получена');
-    return { ok: true, url };
+    if (!/^https?:\/\//.test(String(url || ''))) throw new Error('нужна ссылка на трек');
+    const out = await runYtdlp(['-f', 'bestaudio/best', '-g', String(url)], 40000);
+    const direct = out.split(/\r?\n/).filter(Boolean)[0];
+    if (!/^https?:\/\//.test(direct || '')) throw new Error('прямая ссылка не получена');
+    return { ok: true, url: direct };
   } catch (err) {
     return { ok: false, error: String(err.message || err).slice(0, 200) };
   }

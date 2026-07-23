@@ -1,7 +1,7 @@
 {
   "name": "vetroduy",
   "productName": "ВЕТРОДУЙ",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "Discord-подобный клиент с комнатами на базе Яндекс Телемоста",
   "author": {
     "name": "VETRODUY"

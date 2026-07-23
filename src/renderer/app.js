@@ -684,8 +684,8 @@ async function playNext() {
   setMusicState('загружаю: ' + item.name, false);
 
   let url = item.url;
-  if (item.kind === 'yt') {
-    const r = await window.api.ytUrl(item.id);
+  if (item.kind === 'sc') {
+    const r = await window.api.songUrl(item.url);
     if (!r.ok) {
       loadingTrack = false;
       setMusicState('не удалось: ' + item.name, false);
@@ -969,7 +969,6 @@ async function musicGo() {
   }
 
   setMusicState('ищу…', false);
-  const [yt, radio] = await Promise.all([window.api.ytSearch(q), window.api.musicSearch(q)]);
 
   const addSection = (label) => {
     const s = document.createElement('div');
@@ -993,24 +992,33 @@ async function musicGo() {
     box.appendChild(b);
   };
 
-  let any = false;
-  if (yt.ok && yt.items && yt.items.length) {
-    any = true;
+  // 1) SoundCloud-треки — показываем сразу
+  const songs = await window.api.songSearch(q);
+  if (songs.ok && songs.items && songs.items.length) {
     addSection('Треки');
-    for (const t of yt.items) {
-      addItem(t.title, (t.channel ? t.channel + ' · ' : '') + t.dur, { kind: 'yt', id: t.id, name: t.title });
+    for (const t of songs.items) {
+      addItem(t.title, (t.channel ? t.channel + ' · ' : '') + t.dur, { kind: 'sc', url: t.url, name: t.title });
     }
+    box.classList.remove('hidden');
+    setMusicState('клик — в очередь', false);
+  } else {
+    setMusicState('ищу радио…', false);
   }
+
+  // 2) Радио — догружаем в фоне с таймаутом (чтобы не блокировало треки)
+  const radioTimeout = new Promise((res) => setTimeout(() => res({ ok: false }), 6000));
+  const radio = await Promise.race([window.api.musicSearch(q), radioTimeout]);
+  const hasSongs = box.querySelector('.mr-item');
   if (radio.ok && radio.items && radio.items.length) {
-    any = true;
     addSection('Радио');
     for (const st of radio.items) {
       addItem(st.name, (st.country || '') + (st.bitrate ? ' · ' + st.bitrate + ' kbps' : ''), { kind: 'radio', name: st.name, url: st.url });
     }
+    box.classList.remove('hidden');
+    setMusicState('клик — в очередь', false);
+  } else if (!hasSongs) {
+    setMusicState('ничего не нашёл', false);
   }
-  if (!any) { setMusicState('ничего не нашёл', false); return; }
-  box.classList.remove('hidden');
-  setMusicState('клик — в очередь', false);
 }
 
 /* ---------- модалка комнаты ---------- */
