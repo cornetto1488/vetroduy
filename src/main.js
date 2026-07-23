@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, session, shell, desktopCapturer, Tray, Menu
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const { execFile } = require('child_process');
 
 // На Linux tar.gz-сборка не имеет setuid-обёртки для chrome-sandbox,
@@ -268,6 +269,7 @@ function startMusicProxy() {
     try {
       const u = new URL(req.url, 'http://127.0.0.1');
       if (u.pathname === '/local') { serveLocalFile(u, req, res); return; }
+      if (u.pathname === '/vosk') { serveVoskModel(res); return; }
       if (u.pathname !== '/stream') { res.writeHead(404); res.end(); return; }
       target = u.searchParams.get('url');
       if (!/^https?:\/\//i.test(target)) { res.writeHead(400); res.end(); return; }
@@ -294,6 +296,40 @@ function startMusicProxy() {
 }
 
 ipcMain.handle('music:proxyPort', () => musicProxyPort);
+
+// ---------- голосовой диджей: русская модель Vosk ----------
+// Модель ~44 МБ — качаем один раз в userData, дальше отдаём с диска
+// локально (воркер vosk-browser умеет забирать её только по http).
+const DJ_MODEL_URL = 'https://github.com/cornetto1488/vetroduy/releases/download/models/vosk-model-small-ru.tar.gz';
+function djModelPath() { return path.join(app.getPath('userData'), 'vosk-model-small-ru.tar.gz'); }
+
+function serveVoskModel(res) {
+  const file = djModelPath();
+  if (!fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
+  res.writeHead(200, {
+    'Content-Type': 'application/gzip',
+    'Content-Length': fs.statSync(file).size,
+    'Access-Control-Allow-Origin': '*'
+  });
+  fs.createReadStream(file).pipe(res);
+}
+
+ipcMain.handle('dj:model', async () => {
+  try {
+    const file = djModelPath();
+    if (!fs.existsSync(file) || fs.statSync(file).size < 1024 * 1024) {
+      const tmp = file + '.part';
+      const out = fs.createWriteStream(tmp);
+      await downloadFollow(DJ_MODEL_URL, out, 0, 'dj:progress');
+      await new Promise((r) => out.end(r));
+      fs.renameSync(tmp, file);
+    }
+    return { ok: true, url: `http://127.0.0.1:${musicProxyPort}/vosk` };
+  } catch (err) {
+    try { fs.unlinkSync(djModelPath() + '.part'); } catch {}
+    return { ok: false, error: String(err.message || err) };
+  }
+});
 
 // регистрация брошенного в окно файла для раздачи через /local
 ipcMain.handle('music:allowFile', (e, p) => {
@@ -529,16 +565,18 @@ ipcMain.handle('app:version', () => app.getVersion());
 // ---------- 1-кнопочное обновление: скачать установщик и запустить ----------
 // net.request сам НЕ следует за редиректами при ручном стриминге,
 // поэтому идём по цепочке Location вручную (GitHub → CDN)
-function downloadFollow(url, out, hops) {
+function downloadFollow(url, out, hops, channel) {
+  const ch = channel || 'update:progress';
   return new Promise((resolve, reject) => {
     if (hops > 6) return reject(new Error('слишком много редиректов'));
-    const req = net.request(url);
-    req.on('response', (res) => {
+    // Именно node:https, а не electron.net — тот ходит по HTTP/2 и
+    // на релизах GitHub стабильно ловит ERR_HTTP2_PROTOCOL_ERROR.
+    const req = https.get(url, { headers: { 'User-Agent': 'vetroduy' } }, (res) => {
       const code = res.statusCode;
       if (code >= 300 && code < 400 && res.headers.location) {
         const loc = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location;
         res.resume(); // сливаем тело редиректа
-        resolve(downloadFollow(loc, out, hops + 1));
+        resolve(downloadFollow(loc, out, hops + 1, ch));
         return;
       }
       if (code !== 200) { reject(new Error('HTTP ' + code)); return; }
@@ -547,13 +585,12 @@ function downloadFollow(url, out, hops) {
       res.on('data', (c) => {
         got += c.length;
         out.write(c);
-        if (total && win) win.webContents.send('update:progress', Math.min(100, Math.round((got / total) * 100)));
+        if (total && win) win.webContents.send(ch, Math.min(100, Math.round((got / total) * 100)));
       });
       res.on('end', () => resolve());
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.end();
   });
 }
 

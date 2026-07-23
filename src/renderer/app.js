@@ -1044,20 +1044,103 @@ function djQueryFor(text) {
   return text.trim(); // конкретный запрос — ищем как есть
 }
 
-async function djGo() {
-  if (!callRoomId()) { setMusicState('сначала зайди в комнату', false); return; }
+async function djPlay(query) {
   if (musicBlocked()) { setMusicState('🔒 хост ограничил управление', false); return; }
-  const raw = $('#music-input').value;
-  const q = djQueryFor(raw);
+  const q = djQueryFor(query);
   $('#music-results').classList.add('hidden');
-  setMusicState('🎧 диджей ищет: ' + q, false);
+  setMusicState('🎧 ищу: ' + q, false);
   const res = await window.api.songSearch(q);
-  if (!res.ok || !res.items || !res.items.length) { setMusicState('🎧 ничего не нашёл по «' + q + '»', false); return; }
+  if (!res.ok || !res.items || !res.items.length) { setMusicState('🎧 не нашёл «' + q + '»', false); return; }
   const t = res.items[0];
-  $('#music-input').value = '';
-  setMusicState('🎧 диджей ставит: ' + t.title, true);
+  setMusicState('🎧 ставлю: ' + t.title, true);
   enqueue({ kind: 'sc', url: t.url, name: t.title });
 }
+
+/* ---------- голосовой диджей: слушает мик и понимает команды ---------- */
+let djOn = false, djModel = null, djRec = null, djStream = null, djCtx = null, djNode = null, djBusy = false;
+
+function djSetVolume(delta) {
+  const el = $('#music-volume');
+  el.value = Math.max(0, Math.min(100, (+el.value || 50) + delta));
+  el.dispatchEvent(new Event('input'));
+  setMusicState('🎧 громкость ' + el.value, true);
+}
+
+// Реагируем только на обращение по имени — иначе музыка из колонок
+// и обычный трёп будут дёргать диджея без конца.
+function djHeard(text) {
+  const t = (text || '').toLowerCase().trim();
+  const m = t.match(/(?:диджей|ди\s?джей|диджэй|дижей|ди\s?джей)\s*,?\s*(.*)$/);
+  if (!m) return;
+  const cmd = m[1].trim();
+  if (!cmd) return;
+  djLog('услышал: ' + cmd);
+
+  if (/^(стоп|стой|выключи|хватит|уйди|заткнись|тихо)/.test(cmd)) { $('#music-stop').click(); setMusicState('🎧 окей, выключаю', false); return; }
+  if (/^(дальше|следующ|скип|пропусти|переключи|другой|другую)/.test(cmd)) { $('#music-next').click(); setMusicState('🎧 переключаю', true); return; }
+  if (/^(пауза|паузу|останови|продолж|дальше играй)/.test(cmd)) { $('#music-pause').click(); return; }
+  if (/^(сделай\s+|давай\s+)?(по)?громче/.test(cmd)) { djSetVolume(+15); return; }
+  if (/^(сделай\s+|давай\s+)?(по)?тише/.test(cmd)) { djSetVolume(-15); return; }
+
+  const p = cmd.match(/^(?:включи|включай|поставь|ставь|давай|найди|запусти|врубай|врубить|сыграй)\s+(.+)$/);
+  const q = p ? p[1] : cmd;
+  if (djBusy) return;
+  djBusy = true;
+  djPlay(q).finally(() => { setTimeout(() => { djBusy = false; }, 1500); });
+}
+
+function djLog(s) { const el = $('#dj-heard'); if (el) el.textContent = s; }
+
+async function djStart() {
+  if (!callRoomId()) { setMusicState('сначала зайди в комнату', false); return; }
+  if (typeof Vosk === 'undefined') { setMusicState('🎧 распознавание не загрузилось', false); return; }
+  try {
+    setMusicState('🎧 бужу диджея…', false);
+    const m = await window.api.djModel();      // ~44 МБ, качается один раз
+    if (!m.ok) { setMusicState('🎧 не скачалась модель: ' + m.error, false); return; }
+    if (!djModel) {
+      setMusicState('🎧 включаю слух…', false);
+      djModel = await Vosk.createModel(m.url);
+    }
+    djStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    djCtx = new AudioContext({ sampleRate: 16000 });
+    djRec = new djModel.KaldiRecognizer(djCtx.sampleRate);
+    djRec.on('result', (msg) => { const t = msg && msg.result && msg.result.text; if (t) djHeard(t); });
+    const src = djCtx.createMediaStreamSource(djStream);
+    djNode = djCtx.createScriptProcessor(4096, 1, 1);
+    djNode.onaudioprocess = (e) => {
+      if (!djOn) return;
+      try { djRec.acceptWaveformFloat(e.inputBuffer.getChannelData(0), djCtx.sampleRate); } catch {}
+    };
+    src.connect(djNode);
+    const mute = djCtx.createGain(); mute.gain.value = 0;  // в тишину, чтобы не эхо в динамики
+    djNode.connect(mute); mute.connect(djCtx.destination);
+    djOn = true;
+    $('#music-dj').classList.add('dj-on');
+    $('#dj-hint').classList.remove('hidden');
+    setMusicState('🎧 диджей слушает', true);
+  } catch (err) {
+    setMusicState('🎧 не вышло: ' + (err.message || err), false);
+    djStop(true);
+  }
+}
+
+function djStop(quiet) {
+  djOn = false;
+  try { if (djNode) { djNode.onaudioprocess = null; djNode.disconnect(); } } catch {}
+  try { if (djStream) djStream.getTracks().forEach((t) => t.stop()); } catch {}
+  try { if (djCtx) djCtx.close(); } catch {}
+  try { if (djRec) djRec.remove(); } catch {}
+  djNode = djStream = djCtx = djRec = null;
+  $('#music-dj').classList.remove('dj-on');
+  $('#dj-hint').classList.add('hidden');
+  djLog('');
+  if (!quiet) setMusicState('🎧 диджей ушёл', false);
+}
+
+function djToggle() { djOn ? djStop() : djStart(); }
 
 /* ---------- модалка комнаты ---------- */
 function normalizeTelemostUrl(raw) {
@@ -1583,8 +1666,9 @@ async function init() {
     stopBot(false);
   });
 
-  // ИИ-диджей: сам находит и ставит (Enter в поле = обычный поиск, кнопка 🎧 = диджей)
-  $('#music-dj').addEventListener('click', djGo);
+  // голосовой диджей: 🎧 зовёт/прогоняет, дальше он слушает мик
+  $('#music-dj').addEventListener('click', djToggle);
+  window.api.onDjProgress((pct) => { if (!djOn) setMusicState('🎧 качаю голосовой движок ' + pct + '%', false); });
 
   // войс-ченджер: применяем к текущему звонку сразу
   $('#voice-select').addEventListener('change', async (e) => {

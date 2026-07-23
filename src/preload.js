@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
   dbReq: (opts) => ipcRenderer.invoke('db:req', opts),
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   onUpdateProgress: (cb) => ipcRenderer.on('update:progress', (e, pct) => cb(pct)),
+  djModel: () => ipcRenderer.invoke('dj:model'),
+  onDjProgress: (cb) => ipcRenderer.on('dj:progress', (e, pct) => cb(pct)),
   botPatchSource: () => botPatchSource,
   voicePatchSource: () => voicePatchSource,
   allowFile: (p) => ipcRenderer.invoke('music:allowFile', p),

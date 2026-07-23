@@ -60,7 +60,11 @@
         <div class="mp-row">
           <input id="music-input" type="text" placeholder="Песня, радио или ссылка…" />
           <button id="music-play" class="icon-btn" title="Найти">🔍</button>
-          <button id="music-dj" class="icon-btn" title="Диджей: сам найдёт и сразу включит (пусто = что-нибудь)">🎧</button>
+          <button id="music-dj" class="icon-btn" title="Позвать голосового диджея — скажи «диджей, включи …»">🎧</button>
+        </div>
+        <div id="dj-hint" class="dj-hint hidden">
+          <span>🎧 скажи вслух: «<b>диджей, включи Кровосток</b>», «диджей, дальше», «диджей, тише», «диджей, стоп»</span>
+          <span id="dj-heard"></span>
         </div>
         <div id="music-results" class="hidden"></div>
         <div id="music-queue" class="hidden"></div>
@@ -204,6 +208,7 @@
     </div>
   </div>
 
+  <script src="vendor/vosk.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
