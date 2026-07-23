@@ -20,6 +20,7 @@
       <img class="logo-mini" src="logo.png" alt="" />
       <span class="tb-title">ВЕТРОДУЙ</span>
       <button id="chat-btn" class="tb-chat hidden" title="Общий чат">💬</button>
+      <button id="watch-btn" class="tb-chat hidden" title="Кинотеатр — смотреть видео вместе">🎬</button>
     </div>
     <div class="tb-controls">
       <button id="btn-mini" class="tb-btn" title="Мини-режим поверх окон">◱</button>
@@ -59,6 +60,7 @@
         <div class="mp-row">
           <input id="music-input" type="text" placeholder="Песня, радио или ссылка…" />
           <button id="music-play" class="icon-btn" title="Найти">🔍</button>
+          <button id="music-dj" class="icon-btn" title="Диджей: сам найдёт и сразу включит (пусто = что-нибудь)">🎧</button>
         </div>
         <div id="music-results" class="hidden"></div>
         <div id="music-queue" class="hidden"></div>
@@ -110,6 +112,18 @@
         </div>
       </div>
       <div id="views"></div>
+
+      <!-- кинотеатр (watch party) -->
+      <div id="watch-overlay" class="hidden">
+        <div class="watch-bar">
+          <span class="watch-title">🎬 Кинотеатр</span>
+          <input id="watch-url" type="text" placeholder="Ссылка на видео: RuTube, VK Видео или прямая .mp4…" />
+          <button id="watch-load" class="btn primary">Показать всем</button>
+          <span id="watch-info"></span>
+          <button id="watch-close" class="icon-btn" title="Закрыть кинотеатр">✕</button>
+        </div>
+        <div id="watch-view"></div>
+      </div>
     </main>
   </div>
 

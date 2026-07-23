@@ -464,6 +464,7 @@ async function refreshShared() {
     if (b && b !== backendUrl) {
       backendUrl = b;
       $('#chat-btn').classList.remove('hidden');
+      $('#watch-btn').classList.remove('hidden');
       presenceHeartbeat();
       presenceRead();
       loadStats(); // топ войса на главной
@@ -1021,6 +1022,43 @@ async function musicGo() {
   }
 }
 
+/* ---------- ИИ-диджей: сам находит трек и сразу ставит ---------- */
+const DJ_MOODS = {
+  'весёл|весел|позитив|качов|кач|туса|туc|праздник': ['party hits', 'фонк качалка', 'русский хип хоп 2024', 'зарубежные хиты'],
+  'груст|печал|медлен|лирик|душев': ['грустный рэп', 'sad russian', 'лирика рэп', 'ambient sad'],
+  'чил|расслаб|спокой|учеб|фон': ['lofi hip hop', 'chillhop', 'чил бит', 'phonk chill'],
+  'фонк|phonk|агресс|качат|спорт|качал': ['phonk', 'aggressive phonk', 'drift phonk', 'russian phonk'],
+  'реп|рэп|русск': ['русский рэп', 'Кровосток', 'ATL', 'Скриптонит', 'Boulevard Depo']
+};
+const DJ_RANDOM = ['Кровосток', 'Miyagi', 'phonk', 'русский рэп 2024', 'lofi hip hop', 'Скриптонит', 'ATL', 'Boulevard Depo', 'зарубежные хиты', 'фонк качалка', '三', 'Big Baby Tape'];
+
+function djQueryFor(text) {
+  const t = (text || '').trim().toLowerCase();
+  if (!t || /^(что-?нибудь|что-?то|рандом|любое|давай|на своё|на свое|сам реши|удиви)/.test(t)) {
+    // без конкретики — по настроению или совсем рандом
+    for (const rx in DJ_MOODS) {
+      if (new RegExp(rx).test(t)) { const arr = DJ_MOODS[rx]; return arr[Math.floor(Math.random() * arr.length)]; }
+    }
+    return DJ_RANDOM[Math.floor(Math.random() * DJ_RANDOM.length)];
+  }
+  return text.trim(); // конкретный запрос — ищем как есть
+}
+
+async function djGo() {
+  if (!callRoomId()) { setMusicState('сначала зайди в комнату', false); return; }
+  if (musicBlocked()) { setMusicState('🔒 хост ограничил управление', false); return; }
+  const raw = $('#music-input').value;
+  const q = djQueryFor(raw);
+  $('#music-results').classList.add('hidden');
+  setMusicState('🎧 диджей ищет: ' + q, false);
+  const res = await window.api.songSearch(q);
+  if (!res.ok || !res.items || !res.items.length) { setMusicState('🎧 ничего не нашёл по «' + q + '»', false); return; }
+  const t = res.items[0];
+  $('#music-input').value = '';
+  setMusicState('🎧 диджей ставит: ' + t.title, true);
+  enqueue({ kind: 'sc', url: t.url, name: t.title });
+}
+
 /* ---------- модалка комнаты ---------- */
 function normalizeTelemostUrl(raw) {
   let u = (typeof raw === 'string' ? raw : '').trim();
@@ -1220,6 +1258,113 @@ async function loadStats() {
 // обновляем топ, пока видна главная
 setInterval(() => { if (!$('#welcome').classList.contains('hidden')) loadStats(); }, 90000);
 
+/* ============================================================
+   Кинотеатр (watch party): смотрим видео синхронно.
+   Ведущий грузит ссылку (RuTube / VK Видео / прямой mp4), его
+   play/pause/тайминг публикуются в Firebase, у остальных то же
+   видео подтягивается и синхронизируется. Источник-независимо —
+   рулим тегом <video> на странице (поэтому не завязано на YouTube).
+   ============================================================ */
+let watchOpen = false, watchWv = null, watchKey = null, watchIsHost = false, watchTimer = null, watchUrl = null, watchHostSince = 0;
+
+const WATCH_CTRL = `(() => {
+  const v = document.querySelector('video');
+  if (!v) return false;
+  window.__wp = {
+    get: () => ({ t: v.currentTime || 0, p: !v.paused, d: v.duration || 0 }),
+    apply: (p, t) => {
+      if (typeof t === 'number' && Math.abs((v.currentTime || 0) - t) > 1.8) { try { v.currentTime = t; } catch (e) {} }
+      if (p && v.paused) v.play().catch(() => {});
+      if (!p && !v.paused) v.pause();
+    }
+  };
+  return true;
+})()`;
+
+function setWatchInfo(t) { $('#watch-info').textContent = t; }
+
+function ensureWatchView(url) {
+  if (!watchWv) {
+    watchWv = document.createElement('webview');
+    watchWv.setAttribute('allowpopups', '');
+    watchWv.setAttribute('partition', 'persist:watch');
+    watchWv.addEventListener('dom-ready', () => { watchWv.dataset.ready = '1'; });
+    $('#watch-view').appendChild(watchWv);
+  }
+  if (watchUrl !== url) { watchUrl = url; watchWv.dataset.ready = ''; watchWv.src = url; }
+}
+function destroyWatchView() { if (watchWv) { watchWv.remove(); watchWv = null; } watchUrl = null; }
+
+function openWatch() {
+  if (!backendReady()) { alert('Кинотеатр работает через общий бэкенд (Firebase). Его нет — см. README.'); return; }
+  watchOpen = true;
+  $('#watch-overlay').classList.remove('hidden');
+  const host = callRoomId() ? null : undefined;
+  $('#watch-url').value = '';
+  setWatchInfo(callRoomId() ? 'вставь ссылку и «Показать всем» — или жди ведущего' : 'сначала зайди в комнату');
+  watchTick();
+  if (watchTimer) clearInterval(watchTimer);
+  watchTimer = setInterval(watchTick, 1500);
+}
+
+function closeWatch() {
+  watchOpen = false;
+  $('#watch-overlay').classList.add('hidden');
+  if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+  if (watchIsHost && watchKey) { try { db('DELETE', `watch/${watchKey}`); } catch {} }
+  destroyWatchView();
+  watchIsHost = false; watchKey = null;
+}
+
+async function watchLoad() {
+  const url = $('#watch-url').value.trim();
+  if (!/^https?:\/\//i.test(url)) { setWatchInfo('нужна ссылка http(s)'); return; }
+  const cr = callRoomId();
+  if (!cr) { setWatchInfo('сначала зайди в комнату'); return; }
+  watchKey = urlKey(findRoom(cr).url);
+  watchIsHost = true;
+  watchHostSince = Date.now();
+  ensureWatchView(url);
+  await db('PUT', `watch/${watchKey}`, { host: { dev: deviceId, name: myName, ts: watchHostSince }, url, playing: false, time: 0, ts: Date.now() });
+  setWatchInfo('ты ведущий • грузим видео…');
+}
+
+async function watchTick() {
+  if (!watchOpen) return;
+  const cr = callRoomId();
+  const key = cr ? urlKey(findRoom(cr).url) : null;
+  if (!key) { setWatchInfo('нет активной комнаты'); return; }
+  if (watchKey && watchKey !== key) {
+    if (watchIsHost) { try { await db('DELETE', `watch/${watchKey}`); } catch {} }
+    destroyWatchView(); watchIsHost = false;
+  }
+  watchKey = key;
+  const res = await db('GET', `watch/${key}`);
+  const w = res.ok ? res.data : null;
+
+  if (watchIsHost) {
+    // теряем хостство ТОЛЬКО если его явно перехватил другой (не при пустом ответе)
+    if (w && w.host && w.host.dev !== deviceId && (w.host.ts || 0) > (watchHostSince || 0)) { watchIsHost = false; return; }
+    let st = null;
+    try { st = await watchWv.executeJavaScript('window.__wp ? window.__wp.get() : null', false); } catch {}
+    if (!st) { try { await watchWv.executeJavaScript(WATCH_CTRL, false); } catch {} }
+    if (st) {
+      db('PATCH', `watch/${key}`, { playing: st.p, time: st.t, ts: Date.now(), host: { dev: deviceId, name: myName, ts: Date.now() } });
+      setWatchInfo('ты ведущий • ' + (st.p ? '▶' : '⏸') + ' ' + Math.floor(st.t) + 'с');
+    }
+  } else {
+    if (!w || !hostFresh(w.host) || !w.url) { setWatchInfo('ведущий ещё не включил видео'); return; }
+    ensureWatchView(w.url);
+    setWatchInfo('смотрим с ' + (w.host.name || 'ведущим') + ' • ' + (w.playing ? '▶' : '⏸'));
+    if (watchWv.dataset.ready) {
+      try {
+        const ok = await watchWv.executeJavaScript(`window.__wp ? window.__wp.apply(${w.playing ? 'true' : 'false'}, ${(+w.time || 0)}) : false`, false);
+        if (ok === false) await watchWv.executeJavaScript(WATCH_CTRL, false);
+      } catch {}
+    }
+  }
+}
+
 /* ---------- чат-шаутбокс ---------- */
 let chatOpen = false;
 let chatTimer = null;
@@ -1375,6 +1520,12 @@ async function init() {
     refreshShared();
   });
 
+  // кинотеатр (watch party)
+  $('#watch-btn').addEventListener('click', openWatch);
+  $('#watch-close').addEventListener('click', closeWatch);
+  $('#watch-load').addEventListener('click', watchLoad);
+  $('#watch-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') watchLoad(); });
+
   // общий чат
   $('#chat-btn').addEventListener('click', openChat);
   $('#chat-close').addEventListener('click', closeChat);
@@ -1431,6 +1582,9 @@ async function init() {
     if (smIsHost) { await smKickAsHost(); return; }
     stopBot(false);
   });
+
+  // ИИ-диджей: сам находит и ставит (Enter в поле = обычный поиск, кнопка 🎧 = диджей)
+  $('#music-dj').addEventListener('click', djGo);
 
   // войс-ченджер: применяем к текущему звонку сразу
   $('#voice-select').addEventListener('change', async (e) => {
