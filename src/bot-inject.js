@@ -10,6 +10,9 @@
   let gain = null;
   let dest = null;
   let audioEl = null;
+  let sfxEl = null;
+  let sfxGain = null;
+  let duckTimer = null;
 
   function ensureGraph() {
     if (ctx) return;
@@ -24,6 +27,15 @@
     const src = ctx.createMediaElementSource(audioEl);
     src.connect(gain);
     // локально музыку не воспроизводим — только в звонок
+
+    // отдельная дорожка для коротких звуков (саундборд, реплики воздухана):
+    // играет поверх музыки, не сбивая текущий трек
+    sfxEl = new Audio();
+    sfxEl.crossOrigin = 'anonymous';
+    sfxGain = ctx.createGain();
+    sfxGain.gain.value = 1;
+    ctx.createMediaElementSource(sfxEl).connect(sfxGain);
+    sfxGain.connect(dest);
   }
 
   navigator.mediaDevices.getUserMedia = async (constraints) => {
@@ -53,6 +65,25 @@
       try { ctx.resume(); } catch {}
       audioEl.src = url;
       return audioEl.play().then(() => 'playing').catch((e) => 'err:' + (e && e.message));
+    },
+    // короткий звук поверх музыки: мем из саундборда или реплика воздухана
+    sfx(url, volume) {
+      ensureGraph();
+      try { ctx.resume(); } catch {}
+      const was = gain.gain.value;
+      const restore = () => {
+        if (duckTimer) { clearTimeout(duckTimer); duckTimer = null; }
+        gain.gain.value = was;
+      };
+      sfxGain.gain.value = Math.max(0, Math.min(1, typeof volume === 'number' ? volume : 1));
+      gain.gain.value = was * 0.25;            // музыку на время приглушаем
+      // саундборд — это короткие звуки: длинное обрываем, чтобы кнопка
+      // случайно не заиграла пятиминутный трек поверх музыки
+      duckTimer = setTimeout(() => { try { sfxEl.pause(); } catch {} restore(); }, 20000);
+      sfxEl.onended = restore;
+      sfxEl.onerror = restore;
+      sfxEl.src = url;
+      return sfxEl.play().then(() => 'playing').catch((e) => { restore(); return 'err:' + (e && e.message); });
     },
     pause() {
       if (audioEl) audioEl.pause();

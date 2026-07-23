@@ -269,7 +269,7 @@ function startMusicProxy() {
     try {
       const u = new URL(req.url, 'http://127.0.0.1');
       if (u.pathname === '/local') { serveLocalFile(u, req, res); return; }
-      if (u.pathname === '/vosk') { serveVoskModel(res); return; }
+      if (u.pathname === '/vosk') { serveVoskModel(u, res); return; }
       if (u.pathname !== '/stream') { res.writeHead(404); res.end(); return; }
       target = u.searchParams.get('url');
       if (!/^https?:\/\//i.test(target)) { res.writeHead(400); res.end(); return; }
@@ -300,11 +300,17 @@ ipcMain.handle('music:proxyPort', () => musicProxyPort);
 // ---------- голосовой диджей: русская модель Vosk ----------
 // Модель ~44 МБ — качаем один раз в userData, дальше отдаём с диска
 // локально (воркер vosk-browser умеет забирать её только по http).
-const DJ_MODEL_URL = 'https://github.com/cornetto1488/vetroduy/releases/download/models/vosk-model-small-ru.tar.gz';
-function djModelPath() { return path.join(app.getPath('userData'), 'vosk-model-small-ru.tar.gz'); }
+// Две модели сразу: русская слышит команды, английская — имена артистов
+// и названия треков, которые русская превращает в кашу.
+const DJ_MODELS = {
+  ru: 'https://github.com/cornetto1488/vetroduy/releases/download/models/vosk-model-small-ru.tar.gz',
+  en: 'https://github.com/cornetto1488/vetroduy/releases/download/models/vosk-model-small-en.tar.gz'
+};
+const djLang = (l) => (l === 'en' ? 'en' : 'ru');
+function djModelPath(lang) { return path.join(app.getPath('userData'), `vosk-model-small-${djLang(lang)}.tar.gz`); }
 
-function serveVoskModel(res) {
-  const file = djModelPath();
+function serveVoskModel(u, res) {
+  const file = djModelPath(u.searchParams.get('lang'));
   if (!fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, {
     'Content-Type': 'application/gzip',
@@ -314,19 +320,20 @@ function serveVoskModel(res) {
   fs.createReadStream(file).pipe(res);
 }
 
-ipcMain.handle('dj:model', async () => {
+ipcMain.handle('dj:model', async (e, lang) => {
+  const L = djLang(lang);
   try {
-    const file = djModelPath();
+    const file = djModelPath(L);
     if (!fs.existsSync(file) || fs.statSync(file).size < 1024 * 1024) {
       const tmp = file + '.part';
       const out = fs.createWriteStream(tmp);
-      await downloadFollow(DJ_MODEL_URL, out, 0, 'dj:progress');
+      await downloadFollow(DJ_MODELS[L], out, 0, 'dj:progress');
       await new Promise((r) => out.end(r));
       fs.renameSync(tmp, file);
     }
-    return { ok: true, url: `http://127.0.0.1:${musicProxyPort}/vosk` };
+    return { ok: true, url: `http://127.0.0.1:${musicProxyPort}/vosk?lang=${L}` };
   } catch (err) {
-    try { fs.unlinkSync(djModelPath() + '.part'); } catch {}
+    try { fs.unlinkSync(djModelPath(L) + '.part'); } catch {}
     return { ok: false, error: String(err.message || err) };
   }
 });
@@ -667,14 +674,21 @@ async function scSearch(q) {
   return entries.map((en) => ({
     url: en.url || en.webpage_url || '',
     dur: fmtDuration(en.duration),
+    secs: Number(en.duration) || 0,
     title: en.title || '',
     channel: en.uploader || en.channel || ''
   })).filter((x) => x.url && x.title);
 }
 
-ipcMain.handle('music:songsearch', async (e, q) => {
+ipcMain.handle('music:songsearch', async (e, q, hint) => {
   try {
-    const variants = queryVariants(q);
+    // hint — что услышала английская модель распознавания. Для английских
+    // имён она даёт нормальное написание там, где русская выдаёт кашу.
+    let variants = queryVariants(q);
+    const h = String(hint || '').trim();
+    if (h && h.toLowerCase() !== String(q || '').trim().toLowerCase()) {
+      variants = [...new Set([variants[0], h, ...variants.slice(1)])].slice(0, 3);
+    }
     // параллельно, иначе два поиска подряд ощутимо тормозят
     const packs = await Promise.all(variants.map((v) => scSearch(v).catch(() => [])));
     const seen = new Set();
@@ -710,6 +724,107 @@ ipcMain.handle('music:songurl', async (e, url) => {
   } catch (err) {
     return { ok: false, error: String(err.message || err).slice(0, 200) };
   }
+});
+
+// ---------- саундборд ----------
+// Звуки лежат в userData/sounds. Свои можно кинуть файлом или скачать
+// по ссылке (yt-dlp вытащит аудио откуда угодно).
+function sfxDir() {
+  const d = path.join(app.getPath('userData'), 'sounds');
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+const safeName = (s) => String(s || 'звук').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 40) || 'звук';
+
+// сносим одноимённые (в т.ч. огрызки прошлых закачек), иначе в саундборде
+// появляются кнопки-двойники с разными расширениями
+function sfxDropSameName(name) {
+  const base = safeName(name).toLowerCase();
+  try {
+    for (const f of fs.readdirSync(sfxDir())) {
+      if (f.replace(/\.[^.]+$/, '').toLowerCase() === base) {
+        try { fs.unlinkSync(path.join(sfxDir(), f)); } catch {}
+      }
+    }
+  } catch {}
+}
+
+ipcMain.handle('sfx:list', () => {
+  try {
+    return fs.readdirSync(sfxDir())
+      .filter((f) => /\.(mp3|wav|ogg|m4a|opus|aac|flac)$/i.test(f))
+      .map((f) => ({ name: f.replace(/\.[^.]+$/, ''), file: path.join(sfxDir(), f) }));
+  } catch { return []; }
+});
+
+ipcMain.handle('sfx:addFile', (e, src, name) => {
+  try {
+    if (!fs.existsSync(src)) return { ok: false, error: 'файла нет' };
+    const ext = path.extname(src).toLowerCase() || '.mp3';
+    if (!AUDIO_MIME[ext]) return { ok: false, error: 'не аудиофайл' };
+    fs.copyFileSync(src, path.join(sfxDir(), safeName(name || path.basename(src, ext)) + ext));
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err.message || err) }; }
+});
+
+ipcMain.handle('sfx:addUrl', async (e, url, name) => {
+  try {
+    if (!/^https?:\/\//i.test(String(url || ''))) return { ok: false, error: 'нужна ссылка' };
+    sfxDropSameName(name);
+    const out = path.join(sfxDir(), safeName(name) + '.%(ext)s');
+    // без -x/--audio-format: конвертация требует ffmpeg, которого в сборке нет.
+    // Берём готовый прогрессивный поток как есть — браузер его и так играет.
+    await runYtdlp(['-f', 'bestaudio[protocol^=http]/bestaudio/best', '--no-playlist', '-o', out, String(url)], 120000);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 160) }; }
+});
+
+// стартовые мемы качаем поиском по SoundCloud (YouTube в РФ закрыт)
+ipcMain.handle('sfx:addSearch', async (e, query, name) => {
+  try {
+    const items = await scSearch(String(query || ''));
+    if (!items.length) return { ok: false, error: 'не нашёл «' + query + '»' };
+    // Мем — это пара секунд. Из выдачи берём самое короткое, иначе в
+    // саундборд попадают пятиминутные треки вместо звука.
+    const short = items.filter((x) => x.secs > 0).sort((a, b) => a.secs - b.secs)[0];
+    const pick = short || items[0];
+    sfxDropSameName(name);
+    const out = path.join(sfxDir(), safeName(name) + '.%(ext)s');
+    await runYtdlp(['-f', 'bestaudio[protocol^=http]/bestaudio/best', '--no-playlist', '-o', out, pick.url], 120000);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 160) }; }
+});
+
+ipcMain.handle('sfx:remove', (e, file) => {
+  try {
+    if (path.dirname(file) !== sfxDir()) return { ok: false };   // только из своей папки
+    fs.unlinkSync(file);
+    return { ok: true };
+  } catch { return { ok: false }; }
+});
+
+// ---------- голос воздухана (системный синтез речи) ----------
+ipcMain.handle('tts:say', async (e, text) => {
+  if (process.platform !== 'win32') return { ok: false, error: 'синтез речи только на Windows' };
+  try {
+    const t = String(text || '').slice(0, 300);
+    if (!t.trim()) return { ok: false, error: 'пусто' };
+    const wav = path.join(app.getPath('temp'), 'vetroduy-tts.wav');
+    const txt = path.join(app.getPath('temp'), 'vetroduy-tts.txt');
+    fs.writeFileSync(txt, t, 'utf8');
+    try { fs.unlinkSync(wav); } catch {}
+    // текст передаём файлом, иначе кавычки и кириллица ломают командную строку
+    const ps = "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; " +
+      "$v=$s.GetInstalledVoices()|Where-Object{$_.VoiceInfo.Culture.Name -eq 'ru-RU'}|Select-Object -First 1; " +
+      "if($v){$s.SelectVoice($v.VoiceInfo.Name)}; $s.Rate=1; " +
+      `$s.SetOutputToWaveFile('${wav}'); $s.Speak([IO.File]::ReadAllText('${txt}',[Text.Encoding]::UTF8)); $s.Dispose()`;
+    await new Promise((resolve, reject) => {
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeout: 20000 },
+        (err) => (err ? reject(err) : resolve()));
+    });
+    if (!fs.existsSync(wav)) return { ok: false, error: 'голос не синтезировался' };
+    return { ok: true, file: wav };
+  } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 160) }; }
 });
 
 // ---------- диагностика падений ----------

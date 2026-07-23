@@ -1079,20 +1079,132 @@ function djQueryFor(text) {
   return text.trim(); // конкретный запрос — ищем как есть
 }
 
+/* Английская модель слышит фразу целиком («воздухан включи…» она разберёт
+   как мусор), а нужен только хвост — само название. Берём столько последних
+   слов, сколько их в русском запросе. */
+function djEnHint(query) {
+  if (!djLastEn.text || Date.now() - djLastEn.ts > 5000) return '';
+  const w = djLastEn.text.trim().split(/\s+/).filter(Boolean);
+  const n = String(query || '').trim().split(/\s+/).filter(Boolean).length;
+  if (!w.length || !n) return '';
+  return w.slice(-Math.min(n, w.length)).join(' ');
+}
+
 async function djPlay(query) {
   if (musicBlocked()) { setMusicState('🔒 хост ограничил управление', false); return; }
   const q = djQueryFor(query);
+  const hint = djEnHint(q);
   $('#music-results').classList.add('hidden');
   setMusicState('🎧 ищу: ' + q, false);
-  const res = await window.api.songSearch(q);
+  const res = await window.api.songSearch(q, hint);
   if (!res.ok || !res.items || !res.items.length) { setMusicState('🎧 не нашёл «' + q + '»', false); return; }
   const t = res.items[0];
   setMusicState('🎧 ставлю: ' + t.title, true);
   enqueue({ kind: 'sc', url: t.url, name: t.title });
+  // воздухан объявляет трек голосом, как радиоведущий
+  setTimeout(() => botSay('Ставлю: ' + t.title.replace(/[_|]+/g, ' ').slice(0, 90)), 900);
+}
+
+/* ---------- саундборд ----------
+   Звук уходит отдельной дорожкой бота, поэтому играет поверх музыки
+   и не сбивает текущий трек. Слышат все в комнате. */
+async function botSfx(file, volume) {
+  if (!botView || !botJoined) { setMusicState('сначала позови бота (включи музыку)', false); return false; }
+  if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();
+  const id = await window.api.allowFile(file);
+  if (!id) return false;
+  const url = `http://127.0.0.1:${musicProxyPort}/local?id=${id}`;
+  try {
+    await botView.executeJavaScript(`window.__bot && window.__bot.sfx(${JSON.stringify(url)}, ${typeof volume === 'number' ? volume : 1})`, false);
+    return true;
+  } catch { return false; }
+}
+
+// воздухан говорит вслух прямо в звонок
+async function botSay(text) {
+  if (!botView || !botJoined) return;
+  const r = await window.api.ttsSay(text);
+  if (!r.ok) return;
+  await botSfx(r.file, 1);
+}
+
+async function renderSfx() {
+  const list = await window.api.sfxList();
+  const grid = $('#sfx-grid');
+  grid.innerHTML = '';
+  if (!list.length) {
+    const e = document.createElement('div');
+    e.className = 'sfx-empty';
+    e.textContent = 'пусто — добавь свой через + или скачай готовые:';
+    const seed = document.createElement('button');
+    seed.id = 'sfx-seed';
+    seed.className = 'sfx-btn';
+    seed.textContent = '⬇ стартовый набор мемов';
+    seed.addEventListener('click', seedSfx);
+    grid.append(e, seed);
+    return;
+  }
+  list.forEach((s) => {
+    const b = document.createElement('button');
+    b.className = 'sfx-btn';
+    b.textContent = s.name;
+    b.title = s.name + ' — клик играет всем, правый клик удаляет';
+    b.addEventListener('click', () => botSfx(s.file));
+    b.addEventListener('contextmenu', async (ev) => {
+      ev.preventDefault();
+      if (!confirm('Удалить звук «' + s.name + '»?')) return;
+      await window.api.sfxRemove(s.file);
+      renderSfx();
+    });
+    grid.appendChild(b);
+  });
+}
+
+/* Стартовый набор мемов. Файлы не вшиты в сборку (чужое аудио), а
+   качаются поиском по SoundCloud — одной кнопкой при пустом саундборде. */
+const SFX_PRESETS = [
+  ['vine boom', 'vine boom sound effect'],
+  ['bruh', 'bruh sound effect'],
+  ['among us', 'among us role reveal sound effect'],
+  ['fbi open up', 'fbi open up sound effect'],
+  ['emotional damage', 'emotional damage sound effect'],
+  ['metal pipe', 'metal pipe falling sound effect'],
+  ['ой всё', 'ой всё звук мем'],
+  ['сосиска', 'звук мем сосиска']
+];
+
+async function seedSfx() {
+  const btn = $('#sfx-seed');
+  if (btn) btn.disabled = true;
+  let ok = 0;
+  for (let i = 0; i < SFX_PRESETS.length; i++) {
+    const [name, q] = SFX_PRESETS[i];
+    setMusicState(`🔊 качаю мемы ${i + 1}/${SFX_PRESETS.length}…`, false);
+    const r = await window.api.sfxAddSearch(q, name);
+    if (r.ok) ok++;
+    await renderSfx();
+  }
+  setMusicState('🔊 добавлено мемов: ' + ok, ok > 0);
+  if (btn) btn.disabled = false;
+  renderSfx();
+}
+
+async function addSfxByUrl() {
+  const url = (prompt('Ссылка на звук (YouTube, SoundCloud, прямой mp3):') || '').trim();
+  if (!url) return;
+  const name = (prompt('Как назвать кнопку?') || '').trim();
+  if (!name) return;
+  setMusicState('🔊 качаю «' + name + '»…', false);
+  const r = await window.api.sfxAddUrl(url, name);
+  setMusicState(r.ok ? '🔊 добавлен: ' + name : '🔊 не вышло: ' + r.error, r.ok);
+  renderSfx();
 }
 
 /* ---------- воздухан: слушает мик и понимает команды ---------- */
 let djOn = false, djModel = null, djRec = null, djStream = null, djCtx = null, djNode = null, djBusy = false;
+// вторая, английская модель: слушает тот же звук параллельно и даёт
+// нормальное написание англоязычных имён вместо русской каши
+let djModelEn = null, djRecEn = null, djLastEn = { text: '', ts: 0 };
 // порог «тут говорят» и состояние текущей фразы
 const DJ_GATE = 0.012;
 let djSpeaking = false, djSilence = 0, djHeardSec = 0, djPrev = null;
@@ -1161,8 +1273,28 @@ async function djStart() {
     djCtx = audioCtx;
     djRec = new djModel.KaldiRecognizer(djCtx.sampleRate);
     djRec.on('result', (msg) => {
-      try { const t = msg && msg.result && msg.result.text; if (t) djHeard(t); } catch {}
+      try {
+        const t = msg && msg.result && msg.result.text;
+        if (!t) return;
+        reportSwears(t);   // считаем мат во всей речи, не только в командах
+        djHeard(t);
+      } catch {}
     });
+
+    // английская модель — не критична: не скачалась, работаем на русской
+    try {
+      if (!djModelEn) {
+        const me = await window.api.djModel('en');
+        if (me.ok) djModelEn = await Vosk.createModel(me.url);
+      }
+      if (djModelEn) {
+        djRecEn = new djModelEn.KaldiRecognizer(djCtx.sampleRate);
+        djRecEn.on('result', (msg) => {
+          const t = msg && msg.result && msg.result.text;
+          if (t) djLastEn = { text: t, ts: Date.now() };
+        });
+      }
+    } catch {}
     const src = djCtx.createMediaStreamSource(djStream);
     djNode = djCtx.createScriptProcessor(4096, 1, 1);
     // Кормим распознаватель ТОЛЬКО когда реально говорят. Если гнать в него
@@ -1185,14 +1317,17 @@ async function djStart() {
           djSilence = 0;
           djHeardSec += buf.length / rate;
           djRec.acceptWaveformFloat(buf, rate);
+          if (djRecEn) djRecEn.acceptWaveformFloat(buf, rate);
         } else if (djSpeaking) {
           djSilence += buf.length / rate;
           djRec.acceptWaveformFloat(buf, rate);    // хвост фразы тоже нужен
+          if (djRecEn) djRecEn.acceptWaveformFloat(buf, rate);
         }
         // пауза после речи либо слишком длинная фраза — закрываем и сбрасываем
         if (djSpeaking && (djSilence > 0.9 || djHeardSec > 12)) {
           djSpeaking = false; djSilence = 0; djHeardSec = 0;
-          djRec.retrieveFinalResult();
+          if (djRecEn) djRecEn.retrieveFinalResult();   // сначала английская —
+          djRec.retrieveFinalResult();                  // чтобы подсказка была готова
         }
       } catch {}
       djPrev = buf.slice(0);
@@ -1215,7 +1350,9 @@ function djStop(quiet) {
   try { if (djNode) { djNode.onaudioprocess = null; djNode.disconnect(); } } catch {}
   try { if (djStream) djStream.getTracks().forEach((t) => t.stop()); } catch {}
   try { if (djRec) djRec.remove(); } catch {}   // контекст общий — его не закрываем
-  djNode = djStream = djCtx = djRec = null;
+  try { if (djRecEn) djRecEn.remove(); } catch {}
+  djNode = djStream = djCtx = djRec = djRecEn = null;
+  djLastEn = { text: '', ts: 0 };
   djSpeaking = false; djSilence = 0; djHeardSec = 0; djPrev = null;
   $('#music-dj').classList.remove('dj-on');
   $('#dj-hint').classList.add('hidden');
@@ -1413,11 +1550,80 @@ setInterval(() => {
   });
 }, 60000);
 
+/* ---------- мат-о-метр ----------
+   Корни матерных слов, но с обязательным началом слова и списком приставок:
+   без этого «хлебать» и «потребует» улетали бы в статистику как мат. */
+const SWEARS = [
+  ['хуй',     /(^|[\s,.!?])[а-яё]{0,3}ху[йёеяю][а-яё]*/g],
+  ['пизда',   /(^|[\s,.!?])[а-яё]{0,3}пизд[а-яё]*/g],
+  ['блядь',   /(^|[\s,.!?])бл[яе][дт][а-яё]*/g],
+  ['ебать',   /(^|[\s,.!?])(за|на|про|вы|у|от|под|при|до|пере|разъ)?[её]б[аеёиуы][а-яё]*/g],
+  ['сука',    /(^|[\s,.!?])сук[аиоуе][а-яё]*/g],
+  ['мудак',   /(^|[\s,.!?])муда[кчлр][а-яё]*/g],
+  ['гандон',  /(^|[\s,.!?])[гк]андон[а-яё]*/g],
+  ['долбоёб', /(^|[\s,.!?])долбо[её]б[а-яё]*/g],
+  ['залупа',  /(^|[\s,.!?])залуп[а-яё]*/g],
+  ['шлюха',   /(^|[\s,.!?])шлюх[а-яё]*/g]
+];
+
+function countSwears(text) {
+  const t = ' ' + (text || '').toLowerCase() + ' ';
+  const found = {};
+  for (const [word, rx] of SWEARS) {
+    rx.lastIndex = 0;
+    const n = (t.match(rx) || []).length;
+    if (n) found[word] = n;
+  }
+  return found;
+}
+
+function reportSwears(text) {
+  if (!backendReady()) return;
+  const found = countSwears(text);
+  const words = Object.keys(found);
+  if (!words.length) return;
+  const patch = { name: myName, swearTotal: { '.sv': { increment: words.reduce((a, w) => a + found[w], 0) } } };
+  for (const w of words) patch['swears/' + w] = { '.sv': { increment: found[w] } };
+  db('PATCH', `stats/${deviceId}`, patch);
+}
+
+function renderSwearMeter(all) {
+  const block = $('#swear-block');
+  const totals = {};
+  let topMan = null;
+  for (const s of Object.values(all || {})) {
+    if (!s || !s.swears) continue;
+    for (const w in s.swears) totals[w] = (totals[w] || 0) + (s.swears[w] || 0);
+    if (s.name && s.swearTotal > 0 && (!topMan || s.swearTotal > topMan.swearTotal)) topMan = s;
+  }
+  const rows = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  if (!rows.length) { block.classList.add('hidden'); return; }
+  const box = $('#swear-list');
+  box.innerHTML = '';
+  rows.forEach(([w, n], i) => {
+    const row = document.createElement('div');
+    row.className = 'stats-row';
+    const place = document.createElement('span'); place.className = 'sr-place'; place.textContent = (i + 1) + '.';
+    const nm = document.createElement('span'); nm.className = 'sr-name'; nm.textContent = w;
+    const c = document.createElement('span'); c.className = 'sr-time sr-swear'; c.textContent = n;
+    row.append(place, nm, c);
+    box.appendChild(row);
+  });
+  if (topMan) {
+    const row = document.createElement('div');
+    row.className = 'stats-row sr-champ';
+    row.textContent = '👑 главный матершинник — ' + topMan.name + ' (' + topMan.swearTotal + ')';
+    box.appendChild(row);
+  }
+  block.classList.remove('hidden');
+}
+
 async function loadStats() {
   if (!backendReady()) return;
   const res = await db('GET', 'stats');
   const block = $('#stats-block');
   if (!res.ok || !res.data) { block.classList.add('hidden'); return; }
+  renderSwearMeter(res.data);
   const rows = Object.values(res.data)
     .filter((s) => s && s.name && typeof s.secs === 'number' && s.secs > 0)
     .sort((a, b) => b.secs - a.secs)
@@ -1703,6 +1909,10 @@ async function init() {
     refreshShared();
   });
 
+  // саундборд
+  $('#sfx-add').addEventListener('click', addSfxByUrl);
+  renderSfx();
+
   // лого и название в шапке = на главную
   $('#home-logo').addEventListener('click', goHome);
   $('#home-title').addEventListener('click', goHome);
@@ -1799,6 +2009,12 @@ async function init() {
       if (!/\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(f.name)) continue;
       const p = window.api.getFilePath(f);
       if (!p) continue;
+      if (e.shiftKey) {                       // с Shift — не в очередь, а в саундборд
+        const r = await window.api.sfxAddFile(p, f.name.replace(/\.[^.]+$/, ''));
+        setMusicState(r.ok ? '🔊 в саундборд: ' + f.name : '🔊 не вышло: ' + r.error, r.ok);
+        renderSfx();
+        continue;
+      }
       const id = await window.api.allowFile(p);
       if (!id) continue;
       if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();

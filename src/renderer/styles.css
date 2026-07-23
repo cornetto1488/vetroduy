@@ -110,6 +110,30 @@ html, body {
   background: rgba(0, 0, 0, 0.14);
 }
 
+/* ---------- саундборд ---------- */
+#sfx-panel {
+  padding: 10px 12px; border-top: 1px solid var(--stroke-soft);
+  background: rgba(0, 0, 0, 0.1);
+}
+#sfx-grid {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+  max-height: 132px; overflow-y: auto;
+}
+#sfx-grid::-webkit-scrollbar { width: 5px; }
+#sfx-grid::-webkit-scrollbar-thumb { background: var(--stroke); border-radius: 3px; }
+.sfx-btn {
+  position: relative;
+  padding: 5px 9px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05);
+  color: var(--text); font-size: 11px; max-width: 116px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .12s, transform .12s;
+}
+.sfx-btn:hover { background: rgba(124, 140, 255, 0.22); }
+.sfx-btn:active { transform: scale(.94); }
+.sfx-hint { margin-top: 7px; font-size: 10px; color: var(--text-dim); }
+.sfx-empty { font-size: 11px; color: var(--text-dim); }
+
 /* ---------- войс-ченджер ---------- */
 #voice-panel {
   display: flex; align-items: center; gap: 8px;
@@ -130,6 +154,13 @@ html, body {
   background: rgba(0, 0, 0, 0.2); border: 1px solid var(--stroke-soft); border-radius: 14px;
 }
 #stats-block.hidden { display: none; }
+#swear-block {
+  margin-top: 12px; padding: 14px 16px; text-align: left;
+  background: rgba(60, 0, 20, 0.22); border: 1px solid rgba(255, 107, 129, 0.25); border-radius: 14px;
+}
+#swear-block.hidden { display: none; }
+.sr-swear { color: #ff9aa8 !important; }
+.sr-champ { font-size: 12px; color: var(--text-dim); padding-top: 6px; margin-top: 4px; border-top: 1px solid var(--stroke-soft); }
 .stats-title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
 .stats-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }

@@ -1,9 +1,9 @@
 {
-  "version": "2.2.0",
-  "page": "https://github.com/cornetto1488/vetroduy/releases/tag/v2.2.0",
+  "version": "2.3.0",
+  "page": "https://github.com/cornetto1488/vetroduy/releases/tag/v2.3.0",
   "download": {
-    "windows": "https://github.com/cornetto1488/vetroduy/releases/download/v2.2.0/VETRODUY-Setup-2.2.0.exe",
-    "linux": "https://github.com/cornetto1488/vetroduy/releases/download/v2.2.0/VETRODUY-Setup-2.2.0.tar.gz"
+    "windows": "https://github.com/cornetto1488/vetroduy/releases/download/v2.3.0/VETRODUY-Setup-2.3.0.exe",
+    "linux": "https://github.com/cornetto1488/vetroduy/releases/download/v2.3.0/VETRODUY-Setup-2.3.0.tar.gz"
   },
   "backend": "https://vetroduy-9f80d-default-rtdb.firebaseio.com",
   "rooms": [
