@@ -14,19 +14,29 @@ const counts = new Map();  // id -> число участников или null
 const prevCounts = new Map();
 let editingRoomId = null;  // null = создание новой
 let audioCtx = null;
+let voiceEffect = 'normal'; // текущий эффект войс-ченджера
 
 const HOME_URL = 'https://telemost.yandex.ru/';
 
 /* ---------- webview-комнаты (один войс за раз, как в Discord) ---------- */
+const VOICE_SRC = window.api.voicePatchSource();
+
 function ensureView(id, url) {
   if (views.has(id)) return views.get(id);
   const wv = document.createElement('webview');
   wv.setAttribute('allowpopups', '');
   wv.src = url;
   wv.dataset.ready = '';
-  wv.addEventListener('dom-ready', () => {
+  wv.addEventListener('dom-ready', async () => {
     wv.dataset.ready = '1';
     applyReskin(wv);
+    if (id !== 'home') {
+      // войс-ченджер: патчим getUserMedia ДО того, как Телемост захватит микрофон
+      try {
+        await wv.executeJavaScript(VOICE_SRC, false);
+        if (voiceEffect !== 'normal') await wv.executeJavaScript(`window.__voice && window.__voice.set(${JSON.stringify(voiceEffect)})`, false);
+      } catch {}
+    }
     startJoinLoop(id, wv);
   });
   wv.addEventListener('did-navigate', () => applyReskin(wv));
@@ -139,7 +149,10 @@ function autoJoinScript(name) {
 
 /* ---------- рескин Телемоста под стиль приложения ---------- */
 const RESKIN_CSS = `
-  [class*="GlobalBar"], [class*="Logo360"], [class*="ServiceWrap"],
+  /* точные классы яндекс-бара; НЕ [class*="GlobalBar"] — иначе прячется
+     весь контент страниц с классом withGlobalBar_... */
+  [class*="GlobalBarRoot"], [class*="globalBar_"], [class*="GlobalBarContainer"],
+  [class*="GlobalBarTop"], [class*="GlobalBarControl"], [class*="Logo360"], [class*="ServiceWrap"],
   [class*="PSHeader"], [class*="promozavr"], [class*="buttonInstallApp"],
   [class*="footerButton"], [class*="AccordionItem"], a[href*="360.yandex"],
   [class*="Tariff"], [class*="tariff"] { display: none !important; }
@@ -453,6 +466,7 @@ async function refreshShared() {
       $('#chat-btn').classList.remove('hidden');
       presenceHeartbeat();
       presenceRead();
+      loadStats(); // топ войса на главной
     }
   }
   const fresh = [];
@@ -633,6 +647,11 @@ async function enqueue(item) {
     const hres = await db('GET', `music/${key}/host`);
     const host = hres.ok ? hres.data : null;
     if (hostFresh(host) && host.dev !== deviceId) {
+      if (item.kind === 'local') {
+        // файл лежит на ТВОЁМ диске — чужой хост его не достанет
+        setMusicState('файл с диска может включить только хост бота', false);
+        return;
+      }
       // бот уже есть у другого — добавляем в ОБЩУЮ очередь, своего не поднимаем
       await db('POST', `music/${key}/adds`, {
         id: item.id || '', kind: item.kind || '', name: item.name, url: item.url || '', by: myName, ts: Date.now()
@@ -679,7 +698,8 @@ async function playNext() {
   if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();
   pendingTrack = {
     name: item.name,
-    url: `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(url)}`
+    // локальный файл уже раздаётся нашим прокси с Range — не заворачиваем в /stream
+    url: item.kind === 'local' ? url : `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(url)}`
   };
   loadingTrack = false;
   const cr = callRoomId();
@@ -1149,6 +1169,49 @@ function togglePing(roomId) {
   renderRooms();
 }
 
+/* ---------- статистика войса (топ задротов) ---------- */
+// раз в минуту, пока сидим в звонке, атомарно прибавляем себе 60 секунд
+setInterval(() => {
+  const rid = callRoomId();
+  if (!rid || !backendReady()) return;
+  const room = findRoom(rid);
+  if (!room) return;
+  const key = urlKey(room.url);
+  db('PATCH', `stats/${deviceId}`, {
+    name: myName,
+    secs: { '.sv': { increment: 60 } },
+    ['byRoom/' + key]: { '.sv': { increment: 60 } }
+  });
+}, 60000);
+
+async function loadStats() {
+  if (!backendReady()) return;
+  const res = await db('GET', 'stats');
+  const block = $('#stats-block');
+  if (!res.ok || !res.data) { block.classList.add('hidden'); return; }
+  const rows = Object.values(res.data)
+    .filter((s) => s && s.name && typeof s.secs === 'number' && s.secs > 0)
+    .sort((a, b) => b.secs - a.secs)
+    .slice(0, 8);
+  if (!rows.length) { block.classList.add('hidden'); return; }
+  const box = $('#stats-list');
+  box.innerHTML = '';
+  rows.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'stats-row';
+    const place = document.createElement('span'); place.className = 'sr-place'; place.textContent = (i + 1) + '.';
+    const nm = document.createElement('span'); nm.className = 'sr-name'; nm.textContent = s.name;
+    const t = document.createElement('span'); t.className = 'sr-time';
+    const h = s.secs / 3600;
+    t.textContent = h >= 1 ? h.toFixed(1) + ' ч' : Math.round(s.secs / 60) + ' мин';
+    row.append(place, nm, t);
+    box.appendChild(row);
+  });
+  block.classList.remove('hidden');
+}
+// обновляем топ, пока видна главная
+setInterval(() => { if (!$('#welcome').classList.contains('hidden')) loadStats(); }, 90000);
+
 /* ---------- чат-шаутбокс ---------- */
 let chatOpen = false;
 let chatTimer = null;
@@ -1217,6 +1280,8 @@ async function init() {
   if (typeof cfg.sharedUrl !== 'string') cfg.sharedUrl = '';
   duckingEnabled = !!cfg.ducking;
   $('#music-duck').classList.toggle('active', duckingEnabled);
+  voiceEffect = cfg.voice || 'normal';
+  $('#voice-select').value = voiceEffect;
 
   // идентификатор устройства и имя для чата/presence
   if (!cfg.deviceId) { cfg.deviceId = crypto.randomUUID(); window.api.setConfig({ deviceId: cfg.deviceId }); }
@@ -1357,6 +1422,38 @@ async function init() {
     if (smFollower()) { await db('PATCH', `music/${smKey}/ctrl`, { stopSeq: { '.sv': { increment: 1 } } }); return; }
     if (smIsHost) { await smKickAsHost(); return; }
     stopBot(false);
+  });
+
+  // войс-ченджер: применяем к текущему звонку сразу
+  $('#voice-select').addEventListener('change', async (e) => {
+    voiceEffect = e.target.value;
+    window.api.setConfig({ voice: voiceEffect });
+    const cr = callRoomId();
+    const wv = cr ? views.get(cr) : null;
+    if (wv && wv.dataset.ready) {
+      try {
+        const r = await wv.executeJavaScript(`window.__voice ? window.__voice.set(${JSON.stringify(voiceEffect)}) : 'nopatch'`, false);
+        if (String(r).startsWith('ok')) setMusicState('🎤 голос: ' + e.target.selectedOptions[0].textContent, true);
+      } catch {}
+    }
+  });
+
+  // drag&drop аудиофайлов — играют у всех через бота
+  document.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
+  document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    document.body.classList.remove('dropping');
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    for (const f of files) {
+      if (!/\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(f.name)) continue;
+      const p = window.api.getFilePath(f);
+      if (!p) continue;
+      const id = await window.api.allowFile(p);
+      if (!id) continue;
+      if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();
+      await enqueue({ kind: 'local', name: f.name.replace(/\.[^.]+$/, ''), url: `http://127.0.0.1:${musicProxyPort}/local?id=${id}` });
+    }
   });
 
   // права хоста на музыку

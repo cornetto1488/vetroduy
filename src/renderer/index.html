@@ -72,6 +72,18 @@
         </div>
       </div>
 
+      <div id="voice-panel">
+        <span class="vp-label">🎤 Голос</span>
+        <select id="voice-select" title="Твой голос в звонке">
+          <option value="normal">Обычный</option>
+          <option value="robot">🤖 Робот</option>
+          <option value="helium">🎈 Гелий</option>
+          <option value="demon">😈 Демон</option>
+          <option value="megaphone">📢 Мегафон</option>
+          <option value="echo">🏔 Эхо</option>
+        </select>
+      </div>
+
       <div class="sb-footer">
         <span title="Глобальный хоткей мута">🎙 Ctrl+Shift+M — мут</span>
       </div>
@@ -85,12 +97,16 @@
           <h1>ВЕТРОДУЙ</h1>
           <p>Комнаты для созвонов на базе Яндекс&nbsp;Телемоста.</p>
           <ol>
-            <li>Нажми «⌂ Телемост» слева и создай встречу.</li>
-            <li>Скопируй ссылку на встречу.</li>
-            <li>Нажми «+» и добавь её как комнату.</li>
+            <li>Заходи в готовые комнаты в разделе «Общие» ☁.</li>
+            <li>Свою встречу создай в приложении Телемоста (телефон/ПК) и добавь ссылку через «+».</li>
+            <li>«⌂ Телемост» — подключение к чужой встрече по номеру.</li>
           </ol>
-          <p class="hint">Переход в другую комнату отключает от текущей — как в Discord.
-          Крестик сворачивает в трей (звонок живёт), ◱ — мини-окно поверх игр, Ctrl+Shift+M — мут откуда угодно.</p>
+          <p class="hint">Крестик сворачивает в трей (звонок живёт), ◱ — мини-окно поверх игр,
+          Ctrl+Shift+M — мут, 🎤 — смени голос, mp3 можно бросать прямо в окно.</p>
+          <div id="stats-block" class="hidden">
+            <div class="stats-title">📊 Топ войса</div>
+            <div id="stats-list"></div>
+          </div>
         </div>
       </div>
       <div id="views"></div>

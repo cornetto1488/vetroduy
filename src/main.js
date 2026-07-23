@@ -221,11 +221,53 @@ function setupSession() {
 // «глушит» звук. Поэтому гоняем поток через локальный прокси.
 let musicProxyPort = 0;
 
+// файлы, разрешённые к раздаче через /local (только явно брошенные в окно)
+const allowedFiles = new Map(); // id -> path
+let allowedFileSeq = 0;
+
+const AUDIO_MIME = {
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.flac': 'audio/flac', '.opus': 'audio/ogg'
+};
+
+function serveLocalFile(u, req, res) {
+  const id = u.searchParams.get('id');
+  const file = allowedFiles.get(id);
+  if (!file || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
+  const stat = fs.statSync(file);
+  const mime = AUDIO_MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+  const range = req.headers.range;
+  let start = 0, end = stat.size - 1, code = 200;
+  const headers = {
+    'Content-Type': mime,
+    'Accept-Ranges': 'bytes',
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-store'
+  };
+  if (range) {
+    const m = /bytes=(\d*)-(\d*)/.exec(range);
+    if (m) {
+      if (m[1]) start = parseInt(m[1], 10);
+      if (m[2]) end = parseInt(m[2], 10);
+      if (start <= end && end < stat.size) {
+        code = 206;
+        headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`;
+      } else { start = 0; end = stat.size - 1; }
+    }
+  }
+  headers['Content-Length'] = end - start + 1;
+  res.writeHead(code, headers);
+  fs.createReadStream(file, { start, end })
+    .on('error', () => { try { res.end(); } catch {} })
+    .pipe(res);
+}
+
 function startMusicProxy() {
   const srv = http.createServer((req, res) => {
     let target;
     try {
       const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname === '/local') { serveLocalFile(u, req, res); return; }
       if (u.pathname !== '/stream') { res.writeHead(404); res.end(); return; }
       target = u.searchParams.get('url');
       if (!/^https?:\/\//i.test(target)) { res.writeHead(400); res.end(); return; }
@@ -252,6 +294,17 @@ function startMusicProxy() {
 }
 
 ipcMain.handle('music:proxyPort', () => musicProxyPort);
+
+// регистрация брошенного в окно файла для раздачи через /local
+ipcMain.handle('music:allowFile', (e, p) => {
+  try {
+    if (typeof p !== 'string' || !fs.existsSync(p) || !fs.statSync(p).isFile()) return null;
+    if (!AUDIO_MIME[path.extname(p).toLowerCase()]) return null;
+    const id = String(++allowedFileSeq);
+    allowedFiles.set(id, p);
+    return id;
+  } catch { return null; }
+});
 
 // поиск радиостанций через открытый Radio Browser API (без ключей);
 // балансировщик all.* нестабилен, поэтому перебираем зеркала

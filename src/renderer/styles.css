@@ -110,6 +110,45 @@ html, body {
   background: rgba(0, 0, 0, 0.14);
 }
 
+/* ---------- войс-ченджер ---------- */
+#voice-panel {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-top: 1px solid var(--stroke-soft);
+  background: rgba(0, 0, 0, 0.1);
+}
+.vp-label { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; }
+#voice-select {
+  flex: 1; padding: 6px 8px; border-radius: 9px;
+  border: 1px solid var(--stroke); background: rgba(20, 22, 45, 0.9);
+  color: var(--text); font-size: 12px; outline: none; cursor: pointer;
+}
+#voice-select:focus { border-color: var(--accent); }
+
+/* ---------- статистика на главной ---------- */
+#stats-block {
+  margin-top: 18px; padding: 14px 16px; text-align: left;
+  background: rgba(0, 0, 0, 0.2); border: 1px solid var(--stroke-soft); border-radius: 14px;
+}
+#stats-block.hidden { display: none; }
+.stats-title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
+.stats-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }
+.stats-row .sr-place { width: 22px; color: var(--text-dim); }
+.stats-row .sr-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stats-row .sr-time { color: #7bffb6; font-weight: 600; white-space: nowrap; }
+.stats-row:first-child .sr-place { color: #ffd36b; }
+
+/* ---------- drag&drop mp3 ---------- */
+body.dropping::after {
+  content: '🎵 Отпусти — добавлю в очередь';
+  position: fixed; inset: 12px; z-index: 200;
+  display: grid; place-items: center;
+  background: rgba(15, 17, 40, 0.82);
+  border: 2px dashed rgba(124, 140, 255, 0.7); border-radius: 22px;
+  font-size: 22px; font-weight: 700; color: var(--text);
+  pointer-events: none;
+}
+
 /* ---------- кнопка обновления ---------- */
 .update-btn {
   margin: 10px 12px 0; padding: 10px 12px; border-radius: 12px;

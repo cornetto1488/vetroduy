@@ -1,8 +1,9 @@
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, clipboard, webUtils } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
 const botPatchSource = fs.readFileSync(path.join(__dirname, 'bot-inject.js'), 'utf8');
+const voicePatchSource = fs.readFileSync(path.join(__dirname, 'voice-inject.js'), 'utf8');
 
 contextBridge.exposeInMainWorld('api', {
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -17,6 +18,9 @@ contextBridge.exposeInMainWorld('api', {
   downloadUpdate: (url) => ipcRenderer.invoke('update:download', url),
   onUpdateProgress: (cb) => ipcRenderer.on('update:progress', (e, pct) => cb(pct)),
   botPatchSource: () => botPatchSource,
+  voicePatchSource: () => voicePatchSource,
+  allowFile: (p) => ipcRenderer.invoke('music:allowFile', p),
+  getFilePath: (file) => { try { return webUtils.getPathForFile(file); } catch { return null; } },
   updateTrayRooms: (rooms) => ipcRenderer.send('rooms:update', rooms),
   readClipboard: () => clipboard.readText(),
   openExternal: (url) => ipcRenderer.send('open:external', url),
