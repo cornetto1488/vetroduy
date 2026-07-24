@@ -624,6 +624,7 @@ async function botStep() {
 }
 
 async function playPending() {
+  if (quizActive) return;   // во время «угадай мелодию» ботом рулит игра
   if (!botView || !botJoined || !pendingTrack) return;
   let r = 'nobot';
   try {
@@ -721,6 +722,7 @@ async function enqueue(item) {
 }
 
 async function playNext() {
+  if (quizActive) return;   // во время «угадай мелодию» ботом рулит игра
   if (!queue.length) {
     pendingTrack = null;
     isPaused = false;
@@ -764,6 +766,7 @@ async function playNext() {
 
 // автопереход к следующему треку, когда текущий закончился
 setInterval(async () => {
+  if (quizActive) return;
   if (!botView || !botJoined || !pendingTrack || isPaused) return;
   try {
     const st = await botView.executeJavaScript('window.__bot ? window.__bot.state() : null', false);
@@ -1129,27 +1132,29 @@ async function djPlay(query) {
    Хост ведёт игру (играет и судит), остальные только кричат.
    ============================================================ */
 // q — что искать на SoundCloud, ans — как это звучит по-русски (для засчёта на слух)
+// ans — все формы, как это может услышать русская И английская модель,
+// поэтому у зарубежных имён есть и латинское написание
 const QUIZ_POOL = [
   { q: 'Кровосток', name: 'Кровосток', ans: ['кровосток'] },
-  { q: 'MORGENSHTERN', name: 'MORGENSHTERN', ans: ['моргенштерн', 'моргенштен', 'моргенштейн'] },
-  { q: 'Oxxxymiron', name: 'Оксимирон', ans: ['оксимирон', 'оксюморон'] },
-  { q: 'Miyagi', name: 'Miyagi', ans: ['мияги', 'мияджи'] },
+  { q: 'MORGENSHTERN', name: 'MORGENSHTERN', ans: ['моргенштерн', 'моргенштен', 'моргенштейн', 'morgenshtern'] },
+  { q: 'Oxxxymiron', name: 'Оксимирон', ans: ['оксимирон', 'оксюморон', 'oxxxymiron', 'oxymiron'] },
+  { q: 'Miyagi', name: 'Miyagi', ans: ['мияги', 'мияджи', 'miyagi'] },
   { q: 'Баста', name: 'Баста', ans: ['баста'] },
-  { q: 'Skriptonit', name: 'Скриптонит', ans: ['скриптонит'] },
-  { q: 'Big Baby Tape', name: 'Big Baby Tape', ans: ['биг бейби тейп', 'бейби тейп'] },
+  { q: 'Skriptonit', name: 'Скриптонит', ans: ['скриптонит', 'skriptonit'] },
+  { q: 'Big Baby Tape', name: 'Big Baby Tape', ans: ['биг бейби тейп', 'бейби тейп', 'big baby tape', 'baby tape'] },
   { q: 'Элджей', name: 'Элджей', ans: ['элджей', 'элджэй'] },
-  { q: 'Скриптонит', name: 'Скриптонит', ans: ['скриптонит'] },
-  { q: 'ATL', name: 'ATL', ans: ['атл', 'а тэ эл'] },
-  { q: 'Linkin Park', name: 'Linkin Park', ans: ['линкин парк', 'линкенпарк', 'линкин'] },
-  { q: 'Eminem', name: 'Eminem', ans: ['эминем'] },
-  { q: 'Billie Eilish', name: 'Billie Eilish', ans: ['билли айлиш', 'билли элиш'] },
-  { q: 'The Weeknd', name: 'The Weeknd', ans: ['уикенд', 'викенд', 'зе уикенд'] },
-  { q: 'Imagine Dragons', name: 'Imagine Dragons', ans: ['имеджин драгонс', 'имэджин драгонс', 'драгонс'] },
-  { q: 'Coldplay', name: 'Coldplay', ans: ['колдплей', 'колд плей'] },
-  { q: 'Queen', name: 'Queen', ans: ['куин', 'квин'] },
-  { q: 'Rammstein', name: 'Rammstein', ans: ['рамштайн', 'раммштайн'] },
-  { q: 'System of a Down', name: 'System of a Down', ans: ['систем оф э даун', 'систем автодаун', 'систем'] },
-  { q: 'Gorillaz', name: 'Gorillaz', ans: ['гориллаз', 'горилаз'] }
+  { q: 'ATL', name: 'ATL', ans: ['атл', 'а тэ эл', 'atl'] },
+  { q: 'Linkin Park', name: 'Linkin Park', ans: ['линкин парк', 'линкенпарк', 'линкин', 'linkin park', 'linkin'] },
+  { q: 'Eminem', name: 'Eminem', ans: ['эминем', 'eminem'] },
+  { q: 'Billie Eilish', name: 'Billie Eilish', ans: ['билли айлиш', 'билли элиш', 'billie eilish', 'eilish'] },
+  { q: 'The Weeknd', name: 'The Weeknd', ans: ['уикенд', 'викенд', 'зе уикенд', 'weeknd', 'the weeknd'] },
+  { q: 'Imagine Dragons', name: 'Imagine Dragons', ans: ['имеджин драгонс', 'имэджин драгонс', 'imagine dragons', 'dragons'] },
+  { q: 'Coldplay', name: 'Coldplay', ans: ['колдплей', 'колд плей', 'coldplay'] },
+  { q: 'Queen', name: 'Queen', ans: ['куин', 'квин', 'queen'] },
+  { q: 'Rammstein', name: 'Rammstein', ans: ['рамштайн', 'раммштайн', 'rammstein'] },
+  { q: 'System of a Down', name: 'System of a Down', ans: ['систем оф э даун', 'систем автодаун', 'system of a down'] },
+  { q: 'Gorillaz', name: 'Gorillaz', ans: ['гориллаз', 'горилаз', 'gorillaz'] },
+  { q: 'Twenty One Pilots', name: 'Twenty One Pilots', ans: ['твенти уан пайлотс', 'twenty one pilots', 'pilots'] }
 ];
 const QUIZ_ROUNDS = 7, QUIZ_GUESS_MS = 30000, QUIZ_REVEAL_MS = 5000;
 
@@ -1181,8 +1186,10 @@ function quizMatch(guess, answers) {
 }
 
 let quizOn = false, quizIsHost = false, quizKey = null, quizTimer = null;
-let quizAnswer = null, quizDeck = [], quizRound = 0, quizPhase = 'lobby';
+let quizAnswer = null, quizDeck = [], quizDeckPtr = 0, quizRound = 0, quizPhase = 'lobby';
 let quizScores = {}, quizPhaseUntil = 0, quizRoundStart = 0, quizSeenGuess = {};
+let quizActive = false;   // идёт игра как хост — обычная музыка заморожена
+let quizBusy = false;     // защита от повторного входа в смену раунда
 
 function quizRoomKey() { const cr = callRoomId(); return cr ? urlKey(findRoom(cr).url) : null; }
 
@@ -1201,17 +1208,31 @@ async function quizPublish(extra) {
   }, extra || {}));
 }
 
-// играем отрывок напрямую через бота, НЕ трогая общую очередь музыки,
-// иначе название трека засветилось бы в панели у всех
+// Играем отрывок напрямую через бота, НЕ трогая общую очередь музыки
+// (иначе название засветилось бы у всех). Перебираем результаты, пока
+// какой-то РЕАЛЬНО не заиграет — раньше зависший стрим оставлял тишину.
 async function quizPlaySnippet(query) {
   const res = await window.api.songSearch(query);
   if (!res.ok || !res.items || !res.items.length) return false;
-  const track = res.items[Math.floor(Math.random() * Math.min(3, res.items.length))];
-  const u = await window.api.songUrl(track.url);
-  if (!u.ok) return false;
   if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();
-  const stream = `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(u.url)}`;
-  try { await botView.executeJavaScript(`window.__bot && window.__bot.play(${JSON.stringify(stream)})`, false); return true; } catch { return false; }
+  for (const track of res.items.slice(0, 4)) {
+    if (!quizActive) return false;
+    const u = await window.api.songUrl(track.url);
+    if (!u.ok) continue;
+    const stream = `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(u.url)}`;
+    try { await botView.executeJavaScript(`window.__bot && window.__bot.play(${JSON.stringify(stream)})`, false); } catch { continue; }
+    // ждём, пока время реально пойдёт (до ~4с) — иначе стрим завис, берём следующий
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      if (!quizActive) return false;
+      try {
+        const s = await botView.executeJavaScript('window.__bot ? window.__bot.state() : null', false);
+        if (s && s.playing && s.time > 0.25) return true;
+      } catch {}
+    }
+    try { await botView.executeJavaScript('window.__bot && window.__bot.stop()', false); } catch {}
+  }
+  return false;
 }
 
 async function quizStopSnippet() {
@@ -1230,22 +1251,39 @@ async function quizStartGame() {
   if (!await ensureBotForQuiz()) { quizToast('нужен музыкальный бот в канале'); return; }
   if (!djOn) djStart();                    // всем нужен слух, чтобы кричать ответы
   quizIsHost = true;
-  quizDeck = shuffle(QUIZ_POOL);
+  quizActive = true;
+  // замораживаем обычную музыку и глушим текущий трек, иначе он перебивает игру
+  queue.length = 0; pendingTrack = null; isPaused = false;
+  try { await botView.executeJavaScript('window.__bot && window.__bot.stop()', false); } catch {}
+  quizDeck = shuffle(QUIZ_POOL); quizDeckPtr = 0;
   quizRound = 0; quizScores = {}; quizSeenGuess = {};
   await quizNextRound();
 }
 
 async function quizNextRound() {
-  quizRound++;
-  if (quizRound > QUIZ_ROUNDS) { await quizEndGame(); return; }
-  quizAnswer = quizDeck[(quizRound - 1) % quizDeck.length];
-  quizPhase = 'playing';
-  quizRoundStart = Date.now();
-  quizPhaseUntil = Date.now() + QUIZ_GUESS_MS;
-  await quizPublish({ revealed: null, winner: null });
-  botSay('Раунд ' + quizRound + '. Что за исполнитель?');
-  const ok = await quizPlaySnippet(quizAnswer.q);
-  if (!ok) { quizToast('не смог поставить трек, пропускаю'); setTimeout(quizNextRound, 800); }
+  if (quizBusy || !quizActive) return;
+  quizBusy = true;
+  try {
+    quizRound++;
+    if (quizRound > QUIZ_ROUNDS) { await quizEndGame(); return; }
+    // фаза загрузки: таймер угадывания ещё НЕ идёт, пока трек не заиграл
+    quizPhase = 'loading'; quizRoundStart = 0; quizPhaseUntil = 0;
+    await quizPublish({ revealed: null, winner: null });
+    let ok = false;
+    for (let tries = 0; tries < 4 && !ok && quizActive; tries++) {
+      quizAnswer = quizDeck[quizDeckPtr % quizDeck.length]; quizDeckPtr++;
+      if (tries === 0) botSay('Раунд ' + quizRound + '. Что за исполнитель?');
+      ok = await quizPlaySnippet(quizAnswer.q);
+    }
+    if (!quizActive) return;
+    // чистим ответы прошлого раунда, чтобы старое не засчиталось в новом
+    try { await db('DELETE', `quiz/${quizKey}/guesses`); } catch {}
+    quizSeenGuess = {};
+    quizPhase = 'playing';
+    quizRoundStart = Date.now();
+    quizPhaseUntil = Date.now() + QUIZ_GUESS_MS;
+    await quizPublish({ revealed: null, winner: null });
+  } finally { quizBusy = false; }
 }
 
 async function quizAward(dev, name) {
@@ -1270,16 +1308,21 @@ async function quizTimeoutRound() {
 async function quizEndGame() {
   quizPhase = 'over';
   quizPhaseUntil = 0;
+  quizActive = false;   // игра кончилась — размораживаем обычную музыку
   await quizStopSnippet();
   await quizPublish({ revealed: null, winner: null });
   const top = Object.values(quizScores).sort((a, b) => b.pts - a.pts)[0];
   botSay(top ? ('Игра окончена. Победил ' + top.name + ' с ' + top.pts + ' очками.') : 'Игра окончена.');
 }
 
-// ответы игроков (что услышал их воздухан) во время раунда — в Firebase
-function quizReportGuess(text) {
+// ответы игроков во время раунда — в Firebase. Русская и английская модель
+// пишут в РАЗНЫЕ поля одной записи (ru/en), чтобы не затирать друг друга:
+// на «big baby tape» русская даёт кашу, а английская — точный текст.
+function quizReportGuess(text, lang) {
   if (!quizOn || quizPhase !== 'playing' || !quizKey) return;
-  db('PATCH', `quiz/${quizKey}/guesses/${deviceId}`, { text, name: myName, ts: Date.now() });
+  const patch = { name: myName, ts: Date.now() };
+  patch[lang === 'en' ? 'en' : 'ru'] = text;
+  db('PATCH', `quiz/${quizKey}/guesses/${deviceId}`, patch);
 }
 
 async function quizHostTick() {
@@ -1294,7 +1337,8 @@ async function quizHostTick() {
       if (!g || !g.ts || g.ts < quizRoundStart) continue;
       if ((quizSeenGuess[dev] || 0) >= g.ts) continue;
       quizSeenGuess[dev] = g.ts;
-      if (quizMatch(g.text, quizAnswer.ans) && (!best || g.ts < best.ts)) best = { dev, name: g.name || 'игрок', ts: g.ts };
+      const texts = [g.ru, g.en, g.text].filter(Boolean);   // g.text — старый формат
+      if (texts.some((t) => quizMatch(t, quizAnswer.ans)) && (!best || g.ts < best.ts)) best = { dev, name: g.name || 'игрок', ts: g.ts };
     }
     if (best) { await quizAward(best.dev, best.name); return; }
     if (now > quizPhaseUntil) { await quizTimeoutRound(); return; }
@@ -1324,7 +1368,11 @@ function quizRender(state) {
     $('#quiz-exit').addEventListener('click', closeQuiz);
     return;
   }
-  if (st.phase === 'playing') {
+  if (st.phase === 'loading') {
+    body.innerHTML = `<div class="quiz-sub">Раунд ${st.round} из ${st.total}</div>` +
+      `<div class="quiz-big">⏳</div><div class="quiz-sub">готовим трек…</div>` + scoreHtml +
+      `<div class="quiz-actions"><button id="quiz-exit" class="btn ghost">Выйти</button></div>`;
+  } else if (st.phase === 'playing') {
     const left = Math.max(0, Math.ceil((st.until - Date.now()) / 1000));
     body.innerHTML = `<div class="quiz-sub">Раунд ${st.round} из ${st.total}</div>` +
       `<div class="quiz-big">🔊 ${left}с</div><div class="quiz-sub">Кричи имя исполнителя!</div>` +
@@ -1354,6 +1402,9 @@ async function quizTick() {
   const res = await db('GET', `quiz/${key}/state`);
   const data = (res.ok && res.data) ? res.data : null;
   const st = (data && data.host && hostFresh(data.host)) ? data : null;
+  // ВАЖНО: зритель тоже держит локальную фазу — иначе quizReportGuess
+  // (проверяет quizPhase==='playing') никогда не отправит его ответ
+  quizPhase = st ? st.phase : 'lobby';
   quizRender(st || { phase: 'lobby' });
 }
 
@@ -1371,7 +1422,7 @@ function openQuiz() {
 
 async function closeQuiz() {
   const wasHost = quizIsHost;
-  quizOn = false; quizIsHost = false;
+  quizOn = false; quizIsHost = false; quizActive = false;
   $('#quiz-overlay').classList.add('hidden');
   if (quizTimer) { clearInterval(quizTimer); quizTimer = null; }
   if (wasHost && quizKey) { try { await quizStopSnippet(); await db('DELETE', `quiz/${quizKey}`); } catch {} }
@@ -1579,9 +1630,6 @@ let djOn = false, djModel = null, djRec = null, djStream = null, djCtx = null, d
 // вторая, английская модель: слушает тот же звук параллельно и даёт
 // нормальное написание англоязычных имён вместо русской каши
 let djModelEn = null, djRecEn = null, djLastEn = { text: '', ts: 0 };
-// порог «тут говорят» и состояние текущей фразы
-const DJ_GATE = 0.012;
-let djSpeaking = false, djSilence = 0, djHeardSec = 0, djPrev = null;
 
 function djSetVolume(delta) {
   const el = $('#music-volume');
@@ -1650,8 +1698,8 @@ async function djStart() {
       try {
         const t = msg && msg.result && msg.result.text;
         if (!t) return;
-        reportSwears(t);      // считаем мат во всей речи, не только в командах
-        quizReportGuess(t);   // во время игры — это ответ на раунд
+        reportSwears(t);          // считаем мат во всей речи, не только в командах
+        quizReportGuess(t, 'ru'); // во время игры — это ответ на раунд
         djHeard(t);
       } catch {}
     });
@@ -1666,46 +1714,26 @@ async function djStart() {
         djRecEn = new djModelEn.KaldiRecognizer(djCtx.sampleRate);
         djRecEn.on('result', (msg) => {
           const t = msg && msg.result && msg.result.text;
-          if (t) djLastEn = { text: t, ts: Date.now() };
+          if (!t) return;
+          djLastEn = { text: t, ts: Date.now() };
+          quizReportGuess(t, 'en');   // англ. ответ (Big Baby Tape и т.п.)
         });
       }
     } catch {}
     const src = djCtx.createMediaStreamSource(djStream);
     djNode = djCtx.createScriptProcessor(4096, 1, 1);
-    // Кормим распознаватель ТОЛЬКО когда реально говорят. Если гнать в него
-    // всё подряд, он на играющей рядом музыке никогда не «закрывает» фразу,
-    // копит состояние и вместе с webview'ами доводит вкладку до нехватки
-    // памяти — приложение падало именно из-за этого.
+    // Кормим распознаватель непрерывно: у живого микрофона паузы между
+    // словами есть, и Vosk сам финализирует фразу по тишине. Гейт по
+    // громкости, что был тут раньше, срезал тихое начало слов — «воздухан»
+    // превращался в «оздухан», wake-word не срабатывал.
     djNode.onaudioprocess = (e) => {
       if (!djOn || !djRec) return;
       const buf = e.inputBuffer.getChannelData(0);
       const rate = djCtx.sampleRate;
-      let sum = 0;
-      for (let i = 0; i < buf.length; i += 4) sum += buf[i] * buf[i];
-      const rms = Math.sqrt(sum / (buf.length / 4));
       try {
-        if (rms > DJ_GATE) {
-          if (!djSpeaking) {                       // старт фразы: добавим чуть предыдущего
-            djSpeaking = true; djHeardSec = 0;
-            if (djPrev) djRec.acceptWaveformFloat(djPrev, rate);
-          }
-          djSilence = 0;
-          djHeardSec += buf.length / rate;
-          djRec.acceptWaveformFloat(buf, rate);
-          if (djRecEn) djRecEn.acceptWaveformFloat(buf, rate);
-        } else if (djSpeaking) {
-          djSilence += buf.length / rate;
-          djRec.acceptWaveformFloat(buf, rate);    // хвост фразы тоже нужен
-          if (djRecEn) djRecEn.acceptWaveformFloat(buf, rate);
-        }
-        // пауза после речи либо слишком длинная фраза — закрываем и сбрасываем
-        if (djSpeaking && (djSilence > 0.9 || djHeardSec > 12)) {
-          djSpeaking = false; djSilence = 0; djHeardSec = 0;
-          if (djRecEn) djRecEn.retrieveFinalResult();   // сначала английская —
-          djRec.retrieveFinalResult();                  // чтобы подсказка была готова
-        }
+        djRec.acceptWaveformFloat(buf, rate);
+        if (djRecEn) djRecEn.acceptWaveformFloat(buf, rate);
       } catch {}
-      djPrev = buf.slice(0);
     };
     src.connect(djNode);
     const mute = djCtx.createGain(); mute.gain.value = 0;  // в тишину, чтобы не эхо в динамики
@@ -1728,7 +1756,6 @@ function djStop(quiet) {
   try { if (djRecEn) djRecEn.remove(); } catch {}
   djNode = djStream = djCtx = djRec = djRecEn = null;
   djLastEn = { text: '', ts: 0 };
-  djSpeaking = false; djSilence = 0; djHeardSec = 0; djPrev = null;
   $('#music-dj').classList.remove('dj-on');
   $('#dj-hint').classList.add('hidden');
   djLog('');
