@@ -288,8 +288,25 @@ async function pollCounts() {
   updateBadges();
   updateSpeaking();
   applyDucking();
+  pushOverlay();
 }
 setInterval(pollCounts, 2500);
+
+/* ---------- оверлей поверх игры ---------- */
+let overlayOn = false;
+function pushOverlay() {
+  if (!overlayOn) return;
+  window.api.overlayData({
+    speakers: speakingNames,
+    now: (typeof pendingTrack !== 'undefined' && pendingTrack && !isPaused) ? pendingTrack.name : null,
+    inCall: !!callRoomId()
+  });
+}
+async function toggleOverlay() {
+  overlayOn = await window.api.overlayToggle();
+  $('#overlay-btn').classList.toggle('on', overlayOn);
+  if (overlayOn) pushOverlay();
+}
 
 /* ---------- дакинг: музыка тише, когда говорит человек ---------- */
 let duckingEnabled = false;
@@ -500,6 +517,7 @@ async function refreshShared() {
       backendUrl = b;
       $('#chat-btn').classList.remove('hidden');
       $('#watch-btn').classList.remove('hidden');
+      $('#quiz-btn').classList.remove('hidden');
       presenceHeartbeat();
       presenceRead();
       loadStats(); // топ войса на главной
@@ -1105,6 +1123,362 @@ async function djPlay(query) {
   setTimeout(() => botSay('Ставлю: ' + t.title.replace(/[_|]+/g, ' ').slice(0, 90)), 900);
 }
 
+/* ============================================================
+   Угадай мелодию: бот играет отрывок трека всем в комнате, игроки
+   выкрикивают исполнителя, воздухан слышит ответы и засчитывает.
+   Хост ведёт игру (играет и судит), остальные только кричат.
+   ============================================================ */
+// q — что искать на SoundCloud, ans — как это звучит по-русски (для засчёта на слух)
+const QUIZ_POOL = [
+  { q: 'Кровосток', name: 'Кровосток', ans: ['кровосток'] },
+  { q: 'MORGENSHTERN', name: 'MORGENSHTERN', ans: ['моргенштерн', 'моргенштен', 'моргенштейн'] },
+  { q: 'Oxxxymiron', name: 'Оксимирон', ans: ['оксимирон', 'оксюморон'] },
+  { q: 'Miyagi', name: 'Miyagi', ans: ['мияги', 'мияджи'] },
+  { q: 'Баста', name: 'Баста', ans: ['баста'] },
+  { q: 'Skriptonit', name: 'Скриптонит', ans: ['скриптонит'] },
+  { q: 'Big Baby Tape', name: 'Big Baby Tape', ans: ['биг бейби тейп', 'бейби тейп'] },
+  { q: 'Элджей', name: 'Элджей', ans: ['элджей', 'элджэй'] },
+  { q: 'Скриптонит', name: 'Скриптонит', ans: ['скриптонит'] },
+  { q: 'ATL', name: 'ATL', ans: ['атл', 'а тэ эл'] },
+  { q: 'Linkin Park', name: 'Linkin Park', ans: ['линкин парк', 'линкенпарк', 'линкин'] },
+  { q: 'Eminem', name: 'Eminem', ans: ['эминем'] },
+  { q: 'Billie Eilish', name: 'Billie Eilish', ans: ['билли айлиш', 'билли элиш'] },
+  { q: 'The Weeknd', name: 'The Weeknd', ans: ['уикенд', 'викенд', 'зе уикенд'] },
+  { q: 'Imagine Dragons', name: 'Imagine Dragons', ans: ['имеджин драгонс', 'имэджин драгонс', 'драгонс'] },
+  { q: 'Coldplay', name: 'Coldplay', ans: ['колдплей', 'колд плей'] },
+  { q: 'Queen', name: 'Queen', ans: ['куин', 'квин'] },
+  { q: 'Rammstein', name: 'Rammstein', ans: ['рамштайн', 'раммштайн'] },
+  { q: 'System of a Down', name: 'System of a Down', ans: ['систем оф э даун', 'систем автодаун', 'систем'] },
+  { q: 'Gorillaz', name: 'Gorillaz', ans: ['гориллаз', 'горилаз'] }
+];
+const QUIZ_ROUNDS = 7, QUIZ_GUESS_MS = 30000, QUIZ_REVEAL_MS = 5000;
+
+// маленький Левенштейн для нестрогого засчёта ответа на слух
+function lev(a, b) {
+  if (a === b) return 0;
+  if (!a.length || !b.length) return Math.max(a.length, b.length);
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function simTxt(a, b) { const n = Math.max(a.length, b.length); return n ? 1 - lev(a, b) / n : 0; }
+
+function quizMatch(guess, answers) {
+  const g = (guess || '').toLowerCase().replace(/[^а-яёa-z\s]/g, ' ').trim();
+  if (!g) return false;
+  const words = g.split(/\s+/);
+  for (const a of answers) {
+    if (g.includes(a)) return true;
+    if (simTxt(g, a) > 0.82) return true;
+    // одиночное слово-ответ ловим по отдельным словам фразы
+    if (!a.includes(' ')) { for (const w of words) if (w.length > 3 && simTxt(w, a) > 0.8) return true; }
+  }
+  return false;
+}
+
+let quizOn = false, quizIsHost = false, quizKey = null, quizTimer = null;
+let quizAnswer = null, quizDeck = [], quizRound = 0, quizPhase = 'lobby';
+let quizScores = {}, quizPhaseUntil = 0, quizRoundStart = 0, quizSeenGuess = {};
+
+function quizRoomKey() { const cr = callRoomId(); return cr ? urlKey(findRoom(cr).url) : null; }
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function shuffle(a) { const r = a.slice(); for (let i = r.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [r[i], r[j]] = [r[j], r[i]]; } return r; }
+
+async function quizPublish(extra) {
+  if (!quizIsHost || !quizKey) return;
+  await db('PUT', `quiz/${quizKey}/state`, Object.assign({
+    host: { dev: deviceId, name: myName, ts: Date.now() },
+    phase: quizPhase, round: quizRound, total: QUIZ_ROUNDS,
+    scores: quizScores, until: quizPhaseUntil
+  }, extra || {}));
+}
+
+// играем отрывок напрямую через бота, НЕ трогая общую очередь музыки,
+// иначе название трека засветилось бы в панели у всех
+async function quizPlaySnippet(query) {
+  const res = await window.api.songSearch(query);
+  if (!res.ok || !res.items || !res.items.length) return false;
+  const track = res.items[Math.floor(Math.random() * Math.min(3, res.items.length))];
+  const u = await window.api.songUrl(track.url);
+  if (!u.ok) return false;
+  if (!musicProxyPort) musicProxyPort = await window.api.musicProxyPort();
+  const stream = `http://127.0.0.1:${musicProxyPort}/stream?url=${encodeURIComponent(u.url)}`;
+  try { await botView.executeJavaScript(`window.__bot && window.__bot.play(${JSON.stringify(stream)})`, false); return true; } catch { return false; }
+}
+
+async function quizStopSnippet() {
+  try { await botView.executeJavaScript('window.__bot && window.__bot.stop()', false); } catch {}
+}
+
+async function ensureBotForQuiz() {
+  const cr = callRoomId();
+  if (!cr) return false;
+  if (!botView || botRoomId !== cr) { startBot(cr); }
+  for (let i = 0; i < 30 && !botJoined; i++) await new Promise((r) => setTimeout(r, 500));
+  return botJoined;
+}
+
+async function quizStartGame() {
+  if (!await ensureBotForQuiz()) { quizToast('нужен музыкальный бот в канале'); return; }
+  if (!djOn) djStart();                    // всем нужен слух, чтобы кричать ответы
+  quizIsHost = true;
+  quizDeck = shuffle(QUIZ_POOL);
+  quizRound = 0; quizScores = {}; quizSeenGuess = {};
+  await quizNextRound();
+}
+
+async function quizNextRound() {
+  quizRound++;
+  if (quizRound > QUIZ_ROUNDS) { await quizEndGame(); return; }
+  quizAnswer = quizDeck[(quizRound - 1) % quizDeck.length];
+  quizPhase = 'playing';
+  quizRoundStart = Date.now();
+  quizPhaseUntil = Date.now() + QUIZ_GUESS_MS;
+  await quizPublish({ revealed: null, winner: null });
+  botSay('Раунд ' + quizRound + '. Что за исполнитель?');
+  const ok = await quizPlaySnippet(quizAnswer.q);
+  if (!ok) { quizToast('не смог поставить трек, пропускаю'); setTimeout(quizNextRound, 800); }
+}
+
+async function quizAward(dev, name) {
+  quizScores[dev] = quizScores[dev] || { name, pts: 0 };
+  quizScores[dev].name = name;
+  quizScores[dev].pts++;
+  quizPhase = 'reveal';
+  quizPhaseUntil = Date.now() + QUIZ_REVEAL_MS;
+  await quizStopSnippet();
+  await quizPublish({ revealed: quizAnswer.name, winner: name });
+  botSay('Верно, ' + name + '. Это ' + quizAnswer.name + '.');
+}
+
+async function quizTimeoutRound() {
+  quizPhase = 'reveal';
+  quizPhaseUntil = Date.now() + QUIZ_REVEAL_MS;
+  await quizStopSnippet();
+  await quizPublish({ revealed: quizAnswer.name, winner: null });
+  botSay('Никто не угадал. Это ' + quizAnswer.name + '.');
+}
+
+async function quizEndGame() {
+  quizPhase = 'over';
+  quizPhaseUntil = 0;
+  await quizStopSnippet();
+  await quizPublish({ revealed: null, winner: null });
+  const top = Object.values(quizScores).sort((a, b) => b.pts - a.pts)[0];
+  botSay(top ? ('Игра окончена. Победил ' + top.name + ' с ' + top.pts + ' очками.') : 'Игра окончена.');
+}
+
+// ответы игроков (что услышал их воздухан) во время раунда — в Firebase
+function quizReportGuess(text) {
+  if (!quizOn || quizPhase !== 'playing' || !quizKey) return;
+  db('PATCH', `quiz/${quizKey}/guesses/${deviceId}`, { text, name: myName, ts: Date.now() });
+}
+
+async function quizHostTick() {
+  const now = Date.now();
+  if (quizPhase === 'playing') {
+    const res = await db('GET', `quiz/${quizKey}/guesses`);
+    const guesses = (res.ok && res.data) ? res.data : {};
+    // самый ранний верный ответ забирает очко
+    let best = null;
+    for (const dev in guesses) {
+      const g = guesses[dev];
+      if (!g || !g.ts || g.ts < quizRoundStart) continue;
+      if ((quizSeenGuess[dev] || 0) >= g.ts) continue;
+      quizSeenGuess[dev] = g.ts;
+      if (quizMatch(g.text, quizAnswer.ans) && (!best || g.ts < best.ts)) best = { dev, name: g.name || 'игрок', ts: g.ts };
+    }
+    if (best) { await quizAward(best.dev, best.name); return; }
+    if (now > quizPhaseUntil) { await quizTimeoutRound(); return; }
+  } else if (quizPhase === 'reveal') {
+    if (now > quizPhaseUntil) { await quizNextRound(); }
+  }
+}
+
+function quizToast(t) { const b = $('#quiz-body'); if (b && quizPhase === 'lobby') return; setMusicState('🎯 ' + t, false); }
+
+function quizRender(state) {
+  const body = $('#quiz-body');
+  if (!body) return;
+  const st = quizIsHost
+    ? { phase: quizPhase, round: quizRound, total: QUIZ_ROUNDS, scores: quizScores, until: quizPhaseUntil, revealed: quizPhase === 'reveal' ? (quizAnswer && quizAnswer.name) : null }
+    : (state || {});
+  const scores = st.scores || {};
+  const rows = Object.values(scores).sort((a, b) => b.pts - a.pts);
+  const scoreHtml = rows.length
+    ? '<div class="quiz-scores">' + rows.map((s, i) => `<div class="quiz-score-row${i === 0 ? ' lead' : ''}"><span>${i === 0 ? '👑 ' : ''}${escapeHtml(s.name)}</span><span class="qs-pts">${s.pts}</span></div>`).join('') + '</div>'
+    : '';
+
+  if (!st.phase || st.phase === 'lobby') {
+    body.innerHTML = `<div class="quiz-sub">Бот включит отрывок — кричи исполнителя вслух, воздухан засчитает. ${QUIZ_ROUNDS} раундов.</div>` +
+      `<div class="quiz-actions"><button id="quiz-start" class="btn primary">▶ Начать игру</button><button id="quiz-exit" class="btn ghost">Закрыть</button></div>`;
+    $('#quiz-start').addEventListener('click', quizStartGame);
+    $('#quiz-exit').addEventListener('click', closeQuiz);
+    return;
+  }
+  if (st.phase === 'playing') {
+    const left = Math.max(0, Math.ceil((st.until - Date.now()) / 1000));
+    body.innerHTML = `<div class="quiz-sub">Раунд ${st.round} из ${st.total}</div>` +
+      `<div class="quiz-big">🔊 ${left}с</div><div class="quiz-sub">Кричи имя исполнителя!</div>` +
+      scoreHtml + `<div class="quiz-actions">${quizIsHost ? '<button id="quiz-skip" class="btn ghost">Пропустить</button>' : ''}<button id="quiz-exit" class="btn ghost">Выйти</button></div>`;
+  } else if (st.phase === 'reveal') {
+    body.innerHTML = `<div class="quiz-sub">Раунд ${st.round} из ${st.total}</div>` +
+      `<div class="quiz-reveal">${escapeHtml(st.revealed || '?')}</div>` +
+      `<div class="quiz-sub">${st.winner ? '✅ угадал ' + escapeHtml(st.winner) : '❌ никто не угадал'}</div>` +
+      scoreHtml + `<div class="quiz-actions"><button id="quiz-exit" class="btn ghost">Выйти</button></div>`;
+  } else if (st.phase === 'over') {
+    const win = rows[0];
+    body.innerHTML = `<div class="quiz-big">🏆</div><div class="quiz-reveal">${win ? escapeHtml(win.name) : 'ничья'}</div>` +
+      `<div class="quiz-sub">победитель</div>` + scoreHtml +
+      `<div class="quiz-actions">${quizIsHost ? '<button id="quiz-again" class="btn primary">Ещё раз</button>' : ''}<button id="quiz-exit" class="btn ghost">Закрыть</button></div>`;
+    if (quizIsHost) $('#quiz-again').addEventListener('click', quizStartGame);
+  }
+  const ex = $('#quiz-exit'); if (ex) ex.addEventListener('click', closeQuiz);
+  const sk = $('#quiz-skip'); if (sk) sk.addEventListener('click', () => { if (quizIsHost) quizTimeoutRound(); });
+}
+
+async function quizTick() {
+  if (!quizOn) return;
+  const key = quizRoomKey();
+  if (!key) { quizRender({ phase: 'lobby' }); return; }
+  quizKey = key;
+  if (quizIsHost) { await quizHostTick(); quizRender(); return; }
+  const res = await db('GET', `quiz/${key}/state`);
+  const data = (res.ok && res.data) ? res.data : null;
+  const st = (data && data.host && hostFresh(data.host)) ? data : null;
+  quizRender(st || { phase: 'lobby' });
+}
+
+function openQuiz() {
+  if (!backendReady()) { alert('Игра работает через общий бэкенд (Firebase).'); return; }
+  if (!callRoomId()) { alert('Сначала зайди в комнату со звонком.'); return; }
+  quizOn = true;
+  quizIsHost = false; quizPhase = 'lobby';
+  $('#quiz-overlay').classList.remove('hidden');
+  quizKey = quizRoomKey();
+  quizTick();
+  if (quizTimer) clearInterval(quizTimer);
+  quizTimer = setInterval(quizTick, 800);
+}
+
+async function closeQuiz() {
+  const wasHost = quizIsHost;
+  quizOn = false; quizIsHost = false;
+  $('#quiz-overlay').classList.add('hidden');
+  if (quizTimer) { clearInterval(quizTimer); quizTimer = null; }
+  if (wasHost && quizKey) { try { await quizStopSnippet(); await db('DELETE', `quiz/${quizKey}`); } catch {} }
+  quizAnswer = null; quizPhase = 'lobby';
+}
+function toggleQuiz() { quizOn ? closeQuiz() : openQuiz(); }
+
+/* ============================================================
+   Караоке: тянем синхронный текст с lrclib и подсвечиваем строку
+   по времени воспроизведения бота. Голос не вырезаем — поём поверх.
+   ============================================================ */
+let karaokeOn = false, karTimer = null, karLines = null, karTrackName = '', karFetching = false;
+
+function parseLrc(lrc) {
+  const out = [];
+  for (const raw of String(lrc || '').split('\n')) {
+    const m = raw.match(/^((?:\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\])+)(.*)$/);
+    if (!m) continue;
+    const text = m[2].trim();
+    const stamps = m[1].match(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g) || [];
+    for (const st of stamps) {
+      const p = st.match(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/);
+      const t = (+p[1]) * 60 + (+p[2]) + (p[3] ? +('0.' + p[3]) : 0);
+      out.push({ t, text });
+    }
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+// «MORGENSHTERN - Быстро (prod. X)» → { artist, track } для запроса текста
+function splitTrack(name) {
+  let s = String(name || '').replace(/\.(mp3|wav|flac|m4a|ogg|opus)$/i, '').trim();
+  s = s.replace(/\s*[\(\[](?:official|prod|remix|feat|ft|audio|lyrics|clip|видео|премьера)[^)\]]*[\)\]]/gi, '').trim();
+  const m = s.split(/\s[-–—]\s/);
+  if (m.length >= 2) return { artist: m[0].trim(), track: m.slice(1).join(' - ').trim() };
+  return { artist: '', track: s };
+}
+
+async function botTime() {
+  if (!botView || !botJoined) return null;
+  try {
+    const st = await botView.executeJavaScript('window.__bot ? window.__bot.state() : null', false);
+    return st && st.playing ? st.time : (st ? st.time : null);
+  } catch { return null; }
+}
+
+function karSetStatus(t) { $('#kar-status').textContent = t; }
+
+function renderKarLines(activeIdx) {
+  const box = $('#kar-lyrics');
+  box.innerHTML = '';
+  if (!karLines || !karLines.length) return;
+  karLines.forEach((l, i) => {
+    if (!l.text) return;
+    const d = document.createElement('div');
+    d.className = 'kar-line' + (i === activeIdx ? ' active' : (i < activeIdx ? ' past' : ''));
+    d.textContent = l.text;
+    box.appendChild(d);
+    if (i === activeIdx) d.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
+}
+
+async function loadKaraoke(name) {
+  karTrackName = name;
+  karLines = null;
+  karFetching = true;
+  renderKarLines(-1);
+  const { artist, track } = splitTrack(name);
+  karSetStatus('ищу текст…');
+  const r = await window.api.karaokeLyrics(artist, track);
+  karFetching = false;
+  if (karTrackName !== name) return;   // трек успел смениться
+  if (!r.ok) { karSetStatus('текста нет — но можно подпевать 🙂'); karLines = null; return; }
+  karLines = parseLrc(r.lrc);
+  karSetStatus(r.artist + ' — ' + r.track);
+  renderKarLines(-1);
+}
+
+async function karTick() {
+  if (!karaokeOn) return;
+  const cur = (typeof pendingTrack !== 'undefined' && pendingTrack) ? pendingTrack.name : null;
+  if (!cur) { karSetStatus('включи трек — покажу текст'); if (karLines) { karLines = null; renderKarLines(-1); } karTrackName = ''; return; }
+  if (cur !== karTrackName && !karFetching) { await loadKaraoke(cur); return; }
+  if (!karLines || !karLines.length) return;
+  const t = await botTime();
+  if (t == null) return;
+  let idx = -1;
+  for (let i = 0; i < karLines.length; i++) { if (karLines[i].t <= t + 0.15) idx = i; else break; }
+  if (idx !== karTick._last) { karTick._last = idx; renderKarLines(idx); }
+}
+
+function openKaraoke() {
+  karaokeOn = true;
+  $('#karaoke-overlay').classList.remove('hidden');
+  karTrackName = ''; karTick._last = -2;
+  karTick();
+  if (karTimer) clearInterval(karTimer);
+  karTimer = setInterval(karTick, 350);
+}
+function closeKaraoke() {
+  karaokeOn = false;
+  $('#karaoke-overlay').classList.add('hidden');
+  if (karTimer) { clearInterval(karTimer); karTimer = null; }
+  karLines = null; karTrackName = '';
+}
+function toggleKaraoke() { karaokeOn ? closeKaraoke() : openKaraoke(); }
+
 /* ---------- саундборд ----------
    Звук уходит отдельной дорожкой бота, поэтому играет поверх музыки
    и не сбивает текущий трек. Слышат все в комнате. */
@@ -1276,7 +1650,8 @@ async function djStart() {
       try {
         const t = msg && msg.result && msg.result.text;
         if (!t) return;
-        reportSwears(t);   // считаем мат во всей речи, не только в командах
+        reportSwears(t);      // считаем мат во всей речи, не только в командах
+        quizReportGuess(t);   // во время игры — это ответ на раунд
         djHeard(t);
       } catch {}
     });
@@ -1908,6 +2283,16 @@ async function init() {
     sharedRooms = [];
     refreshShared();
   });
+
+  // оверлей поверх игры
+  $('#overlay-btn').addEventListener('click', toggleOverlay);
+
+  // караоке
+  $('#karaoke-btn').addEventListener('click', toggleKaraoke);
+  $('#kar-close').addEventListener('click', closeKaraoke);
+
+  // угадай мелодию
+  $('#quiz-btn').addEventListener('click', toggleQuiz);
 
   // саундборд
   $('#sfx-add').addEventListener('click', addSfxByUrl);

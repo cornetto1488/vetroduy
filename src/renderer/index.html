@@ -21,6 +21,9 @@
       <span id="home-title" class="tb-title" title="На главную">ВЕТРОДУЙ</span>
       <button id="chat-btn" class="tb-chat hidden" title="Общий чат">💬</button>
       <button id="watch-btn" class="tb-chat hidden" title="Кинотеатр — смотреть видео вместе">🎬</button>
+      <button id="karaoke-btn" class="tb-chat" title="Караоке — текст песни синхронно">🎤</button>
+      <button id="quiz-btn" class="tb-chat hidden" title="Угадай мелодию — голосовая игра">🎯</button>
+      <button id="overlay-btn" class="tb-chat" title="Оверлей поверх игры: кто говорит и что играет">🕶️</button>
     </div>
     <div class="tb-controls">
       <button id="btn-mini" class="tb-btn" title="Мини-режим поверх окон">◱</button>
@@ -136,6 +139,24 @@
         <div class="jc-title">ВЕТРОДУЙ</div>
         <div id="jc-text" class="jc-text">подключаемся…</div>
         <div class="jc-dots"><span></span><span></span><span></span></div>
+      </div>
+
+      <!-- караоке -->
+      <div id="karaoke-overlay" class="hidden">
+        <div class="kar-bar">
+          <span class="kar-title">🎤 Караоке</span>
+          <span id="kar-status">жду трек…</span>
+          <button id="kar-close" class="icon-btn" title="Закрыть караоке">✕</button>
+        </div>
+        <div id="kar-lyrics"></div>
+      </div>
+
+      <!-- угадай мелодию -->
+      <div id="quiz-overlay" class="hidden">
+        <div class="quiz-card">
+          <div class="quiz-head">🎯 Угадай мелодию</div>
+          <div id="quiz-body"></div>
+        </div>
       </div>
 
       <!-- кинотеатр (watch party) -->

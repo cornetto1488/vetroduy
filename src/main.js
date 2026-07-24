@@ -138,6 +138,42 @@ function toggleMiniMode() {
   rebuildTray();
 }
 
+// ---------- игровой оверлей поверх полноэкранной игры ----------
+// Прозрачное окно «поверх всего», клики проходят насквозь — не мешает игре.
+// Показывает, кто говорит и что сейчас играет, без альт-таба.
+let overlayWin = null;
+
+function createOverlay() {
+  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin;
+  const { workArea } = screen.getPrimaryDisplay();
+  overlayWin = new BrowserWindow({
+    width: 300, height: 200,
+    x: workArea.x + workArea.width - 320, y: workArea.y + 20,
+    frame: false, transparent: true, resizable: false, movable: false,
+    skipTaskbar: true, focusable: false, show: false,
+    alwaysOnTop: true, hasShadow: false,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  });
+  overlayWin.setAlwaysOnTop(true, 'screen-saver');
+  overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWin.setIgnoreMouseEvents(true);   // клики уходят в игру под оверлеем
+  overlayWin.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
+  overlayWin.on('closed', () => { overlayWin = null; });
+  return overlayWin;
+}
+
+ipcMain.handle('overlay:toggle', (e, on) => {
+  const show = on === undefined ? !(overlayWin && overlayWin.isVisible()) : !!on;
+  if (show) { createOverlay().showInactive(); }
+  else if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide();
+  return show;
+});
+
+// данные (кто говорит, что играет) из главного окна → в оверлей
+ipcMain.on('overlay:data', (e, data) => {
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('overlay:data', data);
+});
+
 // ---------- трей ----------
 function rebuildTray() {
   if (!tray) return;
@@ -825,6 +861,41 @@ ipcMain.handle('tts:say', async (e, text) => {
     if (!fs.existsSync(wav)) return { ok: false, error: 'голос не синтезировался' };
     return { ok: true, file: wav };
   } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 160) }; }
+});
+
+// ---------- караоке: синхронные тексты с lrclib.net (бесплатно, без ключа) ----------
+function httpsJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'vetroduy (github.com/cornetto1488/vetroduy)' } }, (res) => {
+      if (res.statusCode === 404) { res.resume(); resolve(null); return; }
+      if (res.statusCode !== 200) { res.resume(); reject(new Error('HTTP ' + res.statusCode)); return; }
+      let d = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { d += c; if (d.length > 4e6) req.destroy(); });
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('таймаут')));
+  });
+}
+
+ipcMain.handle('karaoke:lyrics', async (e, artist, track) => {
+  try {
+    const A = encodeURIComponent(String(artist || '').trim());
+    const T = encodeURIComponent(String(track || '').trim());
+    // сперва точный запрос, затем свободный поиск
+    let hit = null;
+    if (A && T) hit = await httpsJson(`https://lrclib.net/api/get?artist_name=${A}&track_name=${T}`);
+    if (!hit || !hit.syncedLyrics) {
+      const q = encodeURIComponent(((artist || '') + ' ' + (track || '')).trim());
+      const arr = await httpsJson(`https://lrclib.net/api/search?q=${q}`);
+      if (Array.isArray(arr)) hit = arr.find((x) => x && x.syncedLyrics) || null;
+    }
+    if (!hit || !hit.syncedLyrics) return { ok: false, error: 'нет синхронного текста' };
+    return { ok: true, lrc: hit.syncedLyrics, artist: hit.artistName, track: hit.trackName };
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 120) };
+  }
 });
 
 // ---------- диагностика падений ----------
